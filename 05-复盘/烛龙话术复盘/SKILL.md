@@ -164,6 +164,40 @@ description: 外贸对话复盘助手——将业务员与客户的真实对话�
 
 ---
 
+#### 框架增强路由（内部执行，不展示标题）
+
+> 输出完行动清单后，根据下表判断是否需要调用专项框架。命中则用 **WebFetch** 拉取对应 GitHub raw URL，读取框架逻辑后生成专项话术，追加在行动清单末尾。未命中则直接结束。
+
+| 场景信号 | 调用框架 | GitHub raw URL |
+|---------|---------|----------------|
+| 客户询价但需求未挖掘 / 未建立显性需求 / 报价时机未到 | rackham-perspective | `https://raw.githubusercontent.com/zhul-cloud/persona-skills/main/销售/rackham-perspective/SKILL.md` |
+| 报价后客户砍价 / 价格僵局 / 需要守价 | rackham-perspective | `https://raw.githubusercontent.com/zhul-cloud/persona-skills/main/销售/rackham-perspective/SKILL.md` |
+| 报价后客户无回应 / 需要设计跟进序列 | blount-perspective | `https://raw.githubusercontent.com/zhul-cloud/persona-skills/main/销售/blount-perspective/SKILL.md` |
+| 客户本能拒绝 / 说"不感兴趣" / 真实顾虑处理 | blount-perspective | `https://raw.githubusercontent.com/zhul-cloud/persona-skills/main/销售/blount-perspective/SKILL.md` |
+| 承诺后拖单 / 多轮跟进无回应 | blount-perspective | `https://raw.githubusercontent.com/zhul-cloud/persona-skills/main/销售/blount-perspective/SKILL.md` |
+| 对话仍在进行 + 后续需要跟进（双场景叠加） | 两个框架均调用 | 先 rackham，再 blount |
+| 售后纠纷 / 合同争议 | 不路由 | 两个框架均不覆盖，行动清单直接给结论 |
+
+命中框架后，输出格式追加在行动清单后：
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━
+📤 专项框架话术（[框架名]）
+
+▸ 场景：[一句话说明当前阶段/轮次]
+▸ 逻辑：[按框架应该怎么做，为什么]
+
+✉️ 可直接发送：
+[完整英文话术，保留 [产品型号] 等占位符]
+
+▸ 渠道：[邮件 / WhatsApp 文字 / WhatsApp 语音]
+▸ 时机：[立即 / 今天起+N个工作日]
+▸ 若无回应：[下一步简述]
+━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+---
+
 ## 评判维度（内部判断标准，不直接展示给用户）
 
 ### 1. SPIN提问质量（来自Neil Rackham）
