@@ -67,9 +67,16 @@ description: 将 Claude Code 格式的 SKILL.md 自动拆解并重组为 Accio W
 
 按以下顺序生成，每个文件完成后继续下一个，不合并输出：
 
-```
-SOUL.md → IDENTITY.md → AGENTS.md → MEMORY.md → USER.md → skills/SKILL.md
-```
+| 顺序 | 文件 | 输入来源 | 详细规则 |
+|------|------|---------|---------|
+| 1 | `SOUL.md` | 执行原则 / 反例黑名单 / 推断 | → 见下方 SOUL.md 生成规则 |
+| 2 | `IDENTITY.md` | 角色定位 / 框架说明 / 能力边界 | → 见下方 IDENTITY.md 生成规则 |
+| 3 | `AGENTS.md` | 路由表 / WebFetch 调用逻辑 | → 见下方 AGENTS.md 生成规则 |
+| 4 | `MEMORY.md` | 跨会话需求推断（通常为全新推断） | → 见下方 MEMORY.md 生成规则 |
+| 5 | `USER.md` | 用户说明 / 场景推断 | → 见下方 USER.md 生成规则 |
+| 6 | `skills/SKILL.md` | 原 SKILL.md 精简（保留执行逻辑） | → 见下方 skills/SKILL.md 生成规则 |
+
+每个文件使用 Write 工具创建，写完一个后继续下一个。
 
 **Step 4：输出迁移报告**
 
