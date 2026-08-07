@@ -338,3 +338,4 @@ description: 将 Claude Code 格式的 SKILL.md 自动拆解并重组为 Accio W
 | 3 | MEMORY.md 和 USER.md 留空说"需用户自行填写" | 这两个文件缺失会让 accio-work 智能体无法正常运行 | 基于 skill 用途推断，给出合理初稿 |
 | 4 | AGENTS.md 在无路由逻辑时省略不创建 | 目录结构不完整，后续扩展困难 | 始终创建，无路由时用最简骨架 |
 | 5 | 一次性输出所有文件内容让用户自己复制 | 容易出错，格式难以保证 | 使用 Write 工具逐文件创建 |
+| 6 | 迁移到其他文件的内容同时保留在 skills/SKILL.md（双写） | SOUL/IDENTITY/AGENTS 与 skills/SKILL.md 内容重叠，后续改一处另一处不同步 | 迁移后在 skills/SKILL.md 顶部加注释行，原内容必须删除：`> 角色定义见 IDENTITY.md · 价值观见 SOUL.md · 路由见 AGENTS.md` |
