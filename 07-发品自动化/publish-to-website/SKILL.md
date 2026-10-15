@@ -1,6 +1,6 @@
 ---
 name: publish-to-website
-description: 把已归档的型号营销内容自动发布到独立站 fouwell.com——生成/更新独立站内容包、同步图片和视频、写入 js/data.js、重新构建静态页、本地验证、部署到生产、更新 GSC 索引追踪表和发布状态表。触发词：发布到独立站、独立站发布、上线fouwell.com、独立站待发布。对应文档：schema/products-schema.md"工作流G：独立站发布"（两者需保持一致）。
+description: 把已归档的型号营销内容自动发布到独立站 fouwell.com（英文版+俄文版/ru/双语同步发布）——生成/更新独立站内容包、同步图片和视频、写入 js/data.js、翻译俄语spec写入 js/i18n-ru.js、重新构建EN+RU静态页、本地验证、部署到生产、更新 GSC/Bing/Yandex 三张索引追踪表和发布状态表。触发词：发布到独立站、独立站发布、上线fouwell.com、独立站待发布。对应文档：schema/products-schema.md"工作流G：独立站发布"（两者需保持一致）。
 ---
 
 # 独立站发布（工作流 G）
@@ -31,7 +31,7 @@ description: 把已归档的型号营销内容自动发布到独立站 fouwell.c
 - "所有独立站待发布的"（批量）——先读 `wiki/marketing/发布状态.md` 的"独立站待发布"表格，取全部型号
 - 隐式触发（工作流C刚归档完某型号的营销内容）——单个型号
 
-批量时，第1-2步（内容包生成、品牌登记检查）逐个型号做；第3-9步（同步资产/构建/验证/部署/追踪表）合并成一轮跑完，减少重复部署次数。
+批量时，第1-2步（内容包生成、品牌登记检查）、第6步（俄语翻译）逐个型号做；第3-5、7-10步（同步资产/构建/验证/部署/追踪表）合并成一轮跑完，减少重复部署次数。
 
 ---
 
@@ -81,14 +81,28 @@ node scripts/generate-data-entry.js
 
 去掉 `--dry-run` 正式写入 `js/data.js`。
 
-### 6. 重新构建静态页
+### 6. 翻译俄语内容，写入 `js/i18n-ru.js`（2026-09-14新增——俄语站/ru/与英文站1:1对应，不是可选步骤）
+
+fouwell.com 有一个完整的俄语镜像站（`/ru/products/<slug>/`、`/ru/products/<cat>/`、`/ru/brands/<slug>/`，跟EN站每一个页面一一对应），**每发布一个新SKU都要同步补上它的俄语版**，不是等积累一批再补。第5步 `generate-data-entry.js` 只会写入EN的`spec`一句话摘要，**永远不会**生成 `specs`/`applications`/`compatibility`/`faq` 这些"深度页"富字段（那是极少数SKU手工加的，见下方"深度页"说明）——所以走这条自动化流程发布的SKU，俄语这边要做的事很简单：
+
+1. 把这一步新写入 `js/data.js` 的 `p.spec` 准确翻译成专业、自然的俄语技术文案（不是机翻腔——参考 `js/i18n-ru.js` 里已有的82条译文的用词/句式风格：型号本身、品牌名、系列代号一律不翻译，只翻译描述性文字；标准工控术语用已有译法，如"преобразователь частоты"=变频器/inverter、"сервопривод"=伺服驱动器、"датчик приближения"=接近传感器）
+2. 打开 `fouwell-website/js/i18n-ru.js`，在 `PRODUCT_SPEC_RU` 这个对象里加一行 `"<型号>": "<俄语译文>",`（型号字符串必须跟 `js/data.js` 里 `p.model` 完全一致，包括大小写和空格——这个字段是按 `p.model` 做key查找的，查不到会静默回退显示英文，不会报错，容易漏查）
+3. 品牌若已登记在 `NON_GENUINE_BRANDS`（第2步检查过）：这条不需要额外处理，`genericFaqFor_ru()` 会自动读同一个 `NON_GENUINE_BRANDS` 集合、跳过"正品/оригинал"话术，跟EN那边的 `genericFaqFor()` 逻辑保持一致，不用手动同步
+4. 编辑完立刻跑 `node --check js/i18n-ru.js` 确认没有手滑破坏JS对象字面量语法（少个逗号/引号不匹配这类）
+5. **"深度页"（specs/applications/compatibility/faq富字段）是例外情况，不是这条自动化流程要处理的**——如果这次要发布的SKU业务上判断值得投入深度页（比如主推爆款），那是营销侧单独决定后手工给 `js/data.js` 加字段的动作，加完之后按 `schema/products-schema.md`"俄语站 /ru/"章节里"新增俄语页面时要做的事"第5条，去 `js/i18n-ru.js` 的 `PRODUCT_DEEP_RU` 补完整的四个字段俄语翻译——这个不在本skill的常规范围内，遇到了另开一轮处理，不要为了赶发布进度就跳过
+
+### 7. 重新构建静态页（EN + RU）
 
 ```bash
 node scripts/build-product-pages.js
 node scripts/build-hub-pages.js
+node scripts/build-product-pages-ru.js
+node scripts/build-hub-pages-ru.js
 ```
 
-### 7. 本地验证（不可省略）
+**顺序不能反**——RU脚本会读EN脚本已生成的 `products/index.html`/`ru/products/index.html` 当页面外壳（topbar/nav/footer）来源。四个脚本跑完后 `sitemap-v2.xml` 会包含新SKU的EN和RU两条URL（`build-hub-pages.js`最后一步统一重新生成）。
+
+### 8. 本地验证（不可省略，EN + RU 都要测）
 
 ```bash
 cd /Users/mac/Documents/llm-wiki/fouwell-website
@@ -96,66 +110,71 @@ cd /Users/mac/Documents/llm-wiki/fouwell-website
 sleep 1
 ```
 
-用 `ego-browser` 加载本次发布的型号页（`http://localhost:8321/products/<slug>/`），关键代码：
+用 `ego-browser` **分别**加载本次发布的型号页的EN版（`http://localhost:8321/products/<slug>/`）和RU版（`http://localhost:8321/ru/products/<slug>/`），关键代码（两个URL跑同一段）：
 
 ```js
 await page.cdp('Network.enable', {});
 await page.cdp('Network.setCacheDisabled', { cacheDisabled: true });
-await page.goto("http://localhost:8321/products/<slug>/", { timeout: 15000 });
+await page.goto("http://localhost:8321/ru/products/<slug>/", { timeout: 15000 });
 await page.waitForTimeout(1500);
 const result = await page.evaluate(() => {
   const mainImg = document.getElementById('pd-main-img');
   const section = document.getElementById('detail-video-section');
+  const badges = document.getElementById('pd-badges');
   return {
     mainImgNaturalWidth: mainImg ? mainImg.naturalWidth : null,   // 必须 >0，等于0说明图片没真实加载
     thumbCount: document.querySelectorAll('#pd-thumbs > *').length, // 应等于该型号的实拍图/兜底图数量
     videoSectionVisible: section ? section.style.display !== 'none' : null, // 有视频的型号应为true
+    badgesText: badges ? badges.textContent : null, // RU页面这里必须是俄语（如"В наличии"），不是英文
   };
 });
 ```
 
-任何一项不对就地排查修复（多半是路径少了 `/`，或者素材没同步到位），重新跑第3-6步，直到验证通过再继续。验证完：
+**RU页面额外要核对的一点**：`js/main.js` 靠客户端JS对RU页面做二次渲染（补齐相册/相关商品等），如果这一层language分流哪里没接对（比如 `resolveProductFromURL()` 认不出 `/ru/...` 路径这种2026-09-14实际踩过的bug），静态HTML是对的、但JS跑完会用英文/空内容覆盖掉——只看静态HTML源码测不出来，**必须让JS真的在浏览器里跑一遍**才能验证，上面这段代码里 `badgesText` 就是专门用来抓这类问题的。任何一项不对就地排查修复，重新跑第3-7步，直到验证通过再继续。验证完：
 
 ```bash
 pkill -f "http.server 8321"
 ```
 
-### 8. 部署到生产
+### 9. 部署到生产
 
 ```bash
 ./scripts/deploy.sh
 ```
 
-会自动把所有 `.js`/`.css` 的 `?v=` 缓存版本号统一换成新时间戳，再 rsync 到 SiteGround（`u1796-rxnrbib8x7ji@gcam1252.siteground.biz:www/fouwell.com/public_html/`，端口18765，密钥 `~/.ssh/fouwell_deploy_key`）。这一步会真实推送到生产环境——推送前如果当前会话的操作规范要求对生产部署做确认，按规范来，不要跳过。
+会自动把所有 `.js`/`.css` 的 `?v=` 缓存版本号统一换成新时间戳，再 rsync 到 SiteGround（`u1796-rxnrbib8x7ji@gcam1252.siteground.biz:www/fouwell.com/public_html/`，端口18765，密钥 `~/.ssh/fouwell_deploy_key`），并自动跑IndexNow把 `sitemap-v2.xml` 全量URL（含新SKU的EN+RU两条）推给Bing/Yandex。这一步会真实推送到生产环境——推送前如果当前会话的操作规范要求对生产部署做确认，按规范来，不要跳过。
 
-### 9. 同步 GSC 索引提交追踪表
+### 10. 同步 GSC + Bing + Yandex 索引提交追踪表
 
 ```bash
 node scripts/sync-indexing-tracker.js
 ```
 
-读 `sitemap-v2.xml`，给新出现的URL在 `wiki/products/GSC索引提交追踪表.md` 追加"未提交"状态的行。已修复过它在 Obsidian 重新格式化表格（列对齐加空格）后误判"这个URL还没出现过"导致重复插入的问题，正常情况下不需要干预；如果又看到重复行，去检查这个脚本里的正则是不是又只匹配了没有padding的旧格式。
+读 `sitemap-v2.xml`，新SKU的EN URL会补进 `wiki/products/GSC索引提交追踪表.md`（"未提交"）和 `wiki/products/Bing索引提交追踪表.md`（"未确认"），RU URL会补进 `wiki/products/Yandex索引提交追踪表.md`（"未确认"）——三张表同一次脚本运行一起更新，按语种/引擎自动分流，不会混装（2026-09-14拆分，之前RU行曾错误追加进GSC/Bing表）。已修复过它在 Obsidian 重新格式化表格（列对齐加空格）后误判"这个URL还没出现过"导致重复插入的问题，正常情况下不需要干预。
 
-### 10. 回填型号页面 frontmatter
+**可选加分项**：如果 Yandex Webmaster Tools 已注册（2026-09-14已注册，见 `wiki/products/Yandex索引提交追踪表.md` 页头），可以把新SKU的RU URL顺手粘进 `webmaster.yandex.com/site/.../indexing/reindex/` 的"Reindex pages"工具（每天限额150个URL，个位数新增基本不会碰到这个上限）——这是一次性优先处理信号，不是必须步骤，跳过也不影响IndexNow的自动推送。
+
+### 11. 回填型号页面 frontmatter
 
 在 `wiki/products/[Brand]/[Category]/[ModelNumber].md` 里：
 
 ```yaml
 website_status: published
-website_url: <第6步构建出的真实URL，从 fouwell-website 里用 productUrl() 逻辑算出来的那个，不要手拼>
+website_url: <第7步构建出的真实EN URL，从 fouwell-website 里用 productUrl() 逻辑算出来的那个，不要手拼>
+website_url_ru: <对应的RU URL，即 /ru + website_url，如 website_url 是 /products/foo/ 就是 /ru/products/foo/>
 website_published_date: <今天日期，YYYY-MM-DD>
 ```
 
-### 11. 重建发布状态表
+### 12. 重建发布状态表
 
 重新生成 `wiki/marketing/发布状态.md` 全表（不要手工加一行了事——历史上手工加行出过 regex 匹配不到、字段对不齐的问题）。逻辑：扫描 `wiki/products/` 下每个型号的 `website_status`/`social_published` frontmatter，按"社媒已发布/内容已生成待发布/待生成"和"独立站已发布/待发布/型号待确认"分类统计，生成总表 + 需要关注清单。
 
 > **2026-09-13新增"创建时间"字段+排序规则**：每行取该型号 `wiki/products/[Brand]/[Category]/[ModelNumber].md` 文件的本地文件系统创建时间戳（`stat`的`birthtime`，精确到分钟），全表（含"社媒待发布"子表）按这个字段**倒序排列，最新型号永远在第一行**。定位方式（Python）：`os.stat(path).st_birthtime`，格式化成 `YYYY-MM-DD HH:MM`。不要用 git log 的首次提交时间做这个字段——本仓库存在大量未提交/已修改文件，git 历史对这批文件不完整、不可靠。
 
-### 12. 追加 log 条目
+### 13. 追加 log 条目
 
-`wiki/log.md` 顶部插入：`## [YYYY-MM-DD] website | <型号列表> 独立站发布（图片N张、视频有/无、价格来源）`
+`wiki/log.md` 顶部插入：`## [YYYY-MM-DD] website | <型号列表> 独立站发布（图片N张、视频有/无、价格来源、EN+RU）`
 
-### 13. 提醒用户
+### 14. 提醒用户
 
 明确告诉用户：**SiteGround Dynamic Cache 需要人工去后台 Flush**（SITE TOOLS → SuperCacher → Dynamic Cache → fouwell.com 行 → Flush Cache 火箭图标）——没有命令行/curl PURGE方法，这是唯一必须由人完成、无法自动化的步骤，不清的话缓存会在3小时后自动失效兜底但不必等。

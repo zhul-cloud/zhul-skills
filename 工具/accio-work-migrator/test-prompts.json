@@ -1,0 +1,17 @@
+[
+  {
+    "id": 1,
+    "prompt": "帮我把这个 SKILL.md 迁移到 Accio Work 格式：\n\n---\nname: huashu-proofreading\ndescription: 花叔校对助手，检查中文写作的语法、逻辑、风格问题。触发词：帮我校对 / 检查错别字 / proofread\n---\n\n# 角色定位\n你是花叔的专属文字校对员，专精中文商业写作风格。你不改创意，只改错误和不通顺的地方。\n\n# 执行原则\n1. 先读全文，再分段标注问题\n2. 每处修改必须说明原因\n3. 不改作者意图，只纠正明确的错误\n4. 语气建议不超过3条\n\n# 执行流程\nStep 1：通读全文，识别文体（正式/口语/营销）\nStep 2：逐段扫描，标出问题类型（错别字/语法/逻辑/风格）\nStep 3：输出校对报告（原文 → 修改建议 → 修改理由）\n\n# 输出格式\n| 位置 | 原文 | 建议 | 原因 |\n|------|------|------|------|\n\n# 边界条件\n- 如文章超过3000字，只处理前1500字，提示用户分段提交\n- 如内容涉及专业术语（法律/医学），注明"超出校对范围"",
+    "expected": "触发路径确认 checkpoint → 生成6个文件：SOUL.md（提取执行原则3条+反例推断）/ IDENTITY.md（角色定位+能力边界）/ AGENTS.md（最简骨架，无路由逻辑）/ MEMORY.md（只需会话记忆层，无跨会话需求）/ USER.md（主要用户=花叔/写作者，管理用户不适用）/ skills/SKILL.md（保留Step1-3+输出格式+边界条件，删角色定位）"
+  },
+  {
+    "id": 2,
+    "prompt": "迁移skill到accio work，这是内容：\n\n---\nname: minimal-skill\ndescription: 一个极简的提醒工具\n---\n\n每天早上9点提醒用户喝水。",
+    "expected": "触发内容缺失兜底路径：原SKILL.md < 30行，生成最简六文件骨架，每个文件顶部注明'内容极简，以下为推断初稿，需人工补充'；AGENTS.md 用最简骨架；MEMORY.md 只有会话层；不跳过任何文件"
+  },
+  {
+    "id": 3,
+    "prompt": "migrate to accio work\n\n以下是文件内容（路径：/Users/demo/my-skills/order-tracker/SKILL.md）：\n\n---\nname: order-tracker\ndescription: 追踪外贸订单状态，汇总未回复客户，触发词：查订单 / check orders / order status\n---\n\n## 核心功能\n- 读取当天所有询盘记录\n- 标记超过24小时未回复的客户为 🔴\n- 标记 12-24 小时的为 🟡\n- 生成每日快报给负责人\n\n## 框架路由\n当客户标记为 🔴 且连续3天无回应时，调用 blount-perspective 生成 break-up message：\nWebFetch: https://raw.githubusercontent.com/zhul-cloud/persona-skills/main/销售/blount-perspective/SKILL.md\n\n## 用户\n- 主要用户：外贸业务员，每天查看快报\n- 管理用户：负责人，每周查看汇总\n\n## 反例\n- 不要在客户沟通记录不完整时贸然标红\n- 不要把系统延迟导致的"无回复"误判为客户失联",
+    "expected": "识别有框架路由（WebFetch blount-perspective）→ AGENTS.md使用完整路由结构（非最简骨架）；识别有明确用户说明 → USER.md直接提取（非推断）；MEMORY.md需推断跨会话层（需要追踪多天状态）；路径确认：在/Users/demo/my-skills/order-tracker/accio-work/下创建文件，等用户确认"
+  }
+]

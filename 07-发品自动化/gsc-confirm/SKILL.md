@@ -76,10 +76,28 @@ URL, and each lookup now has a real (if generous) daily budget to respect.
        undefined, { timeout: 60000 }
      );
      ```
-   - **"网址已收录到 Google" appears** → confirmed indexed. Record it (e.g. push to an array)
-     for the table update in step 5 — don't write the file mid-loop, batch the writes after.
-   - **"网址尚未收录到 Google" appears** → not indexed yet. Leave the row untouched — do NOT
-     write anything for it, it stays `已提交` for a future sweep. Move to the next URL.
+   - **Detect "indexed" via the "网页索引编制" section, not the top banner alone** (found
+     2026-09-16): GSC has at least three top-banner variants, and only two are obviously
+     "indexed" by wording — "网址已收录到 Google" (clean) and "此网址已显示在 Google 搜索
+     结果中，但有问题" (indexed but with an unrelated data-quality warning, e.g. a 商家信息/
+     merchant-listing schema issue — the page is still indexed, just flagged for a separate
+     structured-data problem). Checking only for the first string misses the second and wrongly
+     leaves an already-indexed URL as `已提交` forever. The reliable signal is the "网页索引
+     编制" sub-section further down the page, which reads exactly "网页已编入索引" whenever the
+     page is indexed, regardless of which banner is showing. Check for that string instead of
+     (or in addition to) the banner text:
+     ```js
+     const indexed = await page.evaluate(() => document.body.innerText.includes('网页已编入索引'));
+     ```
+     → confirmed indexed. Record it (e.g. push to an array) for the table update in step 5 —
+     don't write the file mid-loop, batch the writes after. If the banner showed the
+     "但有问题" (has-issues) variant, append a note to 备注 naming the flagged sub-section
+     (e.g. which enhancement showed `error`/"检测到了 N 项无效内容") so it's visible for a
+     later, separate structured-data cleanup — but still mark 提交状态 = `已确认收录`, since
+     indexing itself succeeded.
+   - **"网址尚未收录到 Google" appears, and "网页已编入索引" is absent** → not indexed yet.
+     Leave the row untouched — do NOT write anything for it, it stays `已提交` for a future
+     sweep. Move to the next URL.
    - **Quota dialog** (`alertdialog` titled "超出了配额", body "您已超出资源的网址检查配额。
      配额会按日更新。") appears instead: this is the URL Inspection quota, not the indexing-
      request one — close the dialog, stop the loop immediately (further clicks are blocked by

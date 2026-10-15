@@ -1,4 +1,4 @@
 interface:
-  display_name: "Fouwell 商品资料与营销内容"
+  display_name: "Fouwell 商品资料与营销内容20261013"
   short_description: "将工业型号资料与多渠道英文营销文案分开，交付两份可维护的 Markdown"
-  default_prompt: "使用 $fouwell-product-content 核实型号 3ABD64644521，并分别生成商品资料和多渠道营销内容两份 Markdown。"
+  default_prompt: "使用 $fouwell-product-content-copy 核实型号 3ABD64644521，并分别生成商品资料和多渠道营销内容两份 Markdown。"

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fouwell SEO + GEO"
+  short_description: "Verified industrial product SEO and GEO content"
+  default_prompt: "Use $fouwell-seo-geo to research and prepare SEO/GEO content for this industrial product."

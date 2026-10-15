@@ -1,0 +1,17 @@
+[
+  {
+    "id": 1,
+    "prompt": "帮我复盘这段对话：\n客户：Hi, I need Siemens S7-1200 PLC, model 6ES7 214-1AG40-0XB0, qty 2 pcs. What's your price?\n业务员：Hello! We have this model in stock. The price is $480/pc.\n客户：That's too expensive. Other suppliers offer $420.\n业务员：This is our best price, sorry.\n客户：Ok forget it.",
+    "expected": "输出六个完整模块；第三模块识别出「折扣谈判被直接拒绝」和「没有追问客户的采购背景/项目背景」；第五模块给出具体的价格防守话术和引导客户说出需求的改进句；第六模块给出今天可以发出的跟进话术"
+  },
+  {
+    "id": 2,
+    "prompt": "这是一段售后投诉对话，帮我复盘：\n客户：The servo drive you sent us is showing error code E007. Our production line is down!\n业务员：I'm sorry to hear that. Please send us a video.\n客户：We can't wait, we need a solution NOW.\n业务员：Let me check with our technical team. Maybe the wiring is wrong.\n客户：Are you saying it's our fault?!\n业务员：No no, just checking all possibilities.",
+    "expected": "第一模块识别为售后紧急故障场景；第三模块必须标记「Maybe the wiring is wrong」是在责任未厘清时暗示客户有问题，触发反例黑名单第4条；第五模块给出既不认错又能稳住客户情绪的具体英文话术"
+  },
+  {
+    "id": 3,
+    "prompt": "帮我看看这段对话有什么问题：\n客户（印度，L2买家）：Do you have Delta VFD VFD015E43A in stock?\n业务员：Yes, we have stock! Price is $95/pc.\n客户：Good. How about VFD022E43A?\n业务员：Also in stock, $118/pc.\n客户：And VFD037E43A?\n业务员：$165/pc, 3-5 days lead time.\n客户：Ok I will check internally and get back to you.\n业务员：Ok please let me know, my friend!",
+    "expected": "第一模块识别买家为南亚/印度背景，L2等级有一定采购经验；第三模块识别「my friend」套话 + 没有追问用途/数量/项目背景 + 结尾没有推进动作；第六模块给出今天的跟进话术（含追问项目背景+制造回复理由）"
+  }
+]
