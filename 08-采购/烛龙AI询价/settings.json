@@ -1,0 +1,9 @@
+{
+  "confirmBeforeSend": false,
+  "shopsPerChannel": { "min": 3, "max": 3 },
+  "replyTimeoutMinutes": 30,
+  "pollIntervalSeconds": { "min": 10, "max": 30 },
+  "maxFollowUpsPerShop": 1,
+  "dedupeDays": 7,
+  "priceOutlierPercent": 30
+}
