@@ -1,0 +1,22 @@
+{
+  "confirmBeforeSend": false,
+  "shopsPerChannel": { "min": 3, "max": 3 },
+  "firstHumanReplyMinutes": 5,
+  "followUpReplyMinutes": 3,
+  "pollIntervalSeconds": { "min": 10, "max": 30 },
+  "maxFollowUpsPerShop": 1,
+  "dedupeDays": 7,
+  "priceOutlierPercent": 30,
+  "thankYouMessages": [
+    "好的，谢谢您！",
+    "收到，麻烦您了，谢谢。",
+    "明白了，辛苦了，谢谢！",
+    "好的，了解了，感谢！",
+    "谢谢您的回复，麻烦了。"
+  ],
+  "subagents": {
+    "enabled": true,
+    "claude": { "model": "sonnet", "effort": "medium" },
+    "codex": { "model": "gpt-6.1-sol", "effort": "medium" }
+  }
+}
