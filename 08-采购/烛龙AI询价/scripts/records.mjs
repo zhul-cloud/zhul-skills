@@ -5,6 +5,7 @@
 //   node records.mjs new-run <任务编号>           新建本次任务文件夹，输出路径
 //   node records.mjs recent <型号> [天数]         查询该型号近 N 天问过的店家（防止重复询价），天数默认取 settings.json 的 dedupeDays
 //   node records.mjs processed <任务编号>         查询该任务是否已在本机提交过回价
+//   node records.mjs merge <本次目录>             把子代理写的各平台记录 run-<平台>.json 合并进 run.json
 //   node records.mjs finish <run.json>            写入询价记录，并把任务记为已处理
 //
 // run.json 格式见 SKILL.md「run.json」。
@@ -106,14 +107,13 @@ function recent(model, days = SETTINGS.dedupeDays) {
     console.log(JSON.stringify(hits, null, 2));
 }
 
-/** 只有提交过回价才算处理过；旧版本留下的草稿记录（draft-saved）不算 */
+/** 只有提交过回价才算处理过；只存了草稿的记录（draft-saved）不算 */
 function processed(taskCode) {
     const history = readJsonl(PROCESSED).filter((r) => r.task === taskCode);
     console.log(JSON.stringify({ task: taskCode, processed: history.some((r) => r.result === 'submitted'), history }, null, 2));
 }
 
-function loadRun(path) {
-    const run = JSON.parse(readFileSync(path, 'utf8'));
+function validateRun(run) {
     const problems = [];
     const ids = new Set((run.items ?? []).map((i) => String(i.itemId)));
     if (!run.task) problems.push('缺少 task（任务编号）');
@@ -126,12 +126,64 @@ function loadRun(path) {
         for (const q of s.quotes ?? []) {
             if (!ids.has(String(q.itemId))) problems.push(`${at}：itemId ${q.itemId} 不在本任务里`);
         }
+        if (s.reusedFrom != null && Number.isNaN(Date.parse(s.reusedFrom))) {
+            problems.push(`${at}：reusedFrom 应为原报价记录的时间`);
+        }
     });
+    return problems;
+}
+
+function loadRun(path) {
+    const run = JSON.parse(readFileSync(path, 'utf8'));
+    const problems = validateRun(run);
     if (problems.length) {
         console.error('run.json 有问题：\n- ' + problems.join('\n- '));
         process.exit(2);
     }
     return run;
+}
+
+/**
+ * 把子代理写的各平台记录 run-<平台>.json 合并进本次目录的 run.json；重复执行时按平台覆盖，不会重复追加。
+ * run.json 的 platforms 里每个平台都要有记录文件，否则报错退出；合并结果校验通过后才写回 run.json。
+ */
+function merge(runDir) {
+    const runPath = join(runDir, 'run.json');
+    const run = JSON.parse(readFileSync(runPath, 'utf8'));
+    const files = readdirSync(runDir).filter((f) => /^run-.+\.json$/.test(f));
+    if (!files.length) {
+        console.error(`${runDir} 里没有 run-<平台>.json`);
+        process.exit(2);
+    }
+    const merged = [];
+    for (const f of files) {
+        const part = JSON.parse(readFileSync(join(runDir, f), 'utf8'));
+        const platform = String(part.platform ?? '').trim();
+        if (!platform) {
+            console.error(`${f}：缺少 platform（平台）`);
+            process.exit(2);
+        }
+        const other = (x) => x.platform !== platform;
+        run.shops = [...(run.shops ?? []).filter(other), ...(part.shops ?? []).map((s) => ({ ...s, platform }))];
+        run.noStock = [...(run.noStock ?? []).filter(other), ...(part.noStock ?? []).map((n) => ({ ...n, platform }))];
+        run.incidents = [...(run.incidents ?? []).filter(other), ...(part.incidents ?? []).map((i) => ({ ...i, platform }))];
+        run.skippedPlatforms = (run.skippedPlatforms ?? []).filter(other);
+        if (part.skipped) run.skippedPlatforms.push({ platform, reason: part.skipped });
+        run.platformStages = { ...(run.platformStages ?? {}), [platform]: part.stages ?? {} };
+        merged.push(`${platform}：${(part.shops ?? []).length} 家店`);
+    }
+    const covered = new Set(files.map((f) => String(JSON.parse(readFileSync(join(runDir, f), 'utf8')).platform).trim()));
+    const missing = (run.platforms ?? []).filter((p) => !covered.has(p));
+    const problems = [
+        ...missing.map((p) => `平台「${p}」没有 run-<平台>.json：子代理还没写完，或该平台需要在记录文件里写明 skipped 原因`),
+        ...validateRun(run),
+    ];
+    if (problems.length) {
+        console.error('合并没有写入 run.json：\n- ' + problems.join('\n- '));
+        process.exit(2);
+    }
+    writeFileSync(runPath, JSON.stringify(run, null, 2));
+    console.log(`已合并到 ${runPath}\n` + merged.join('\n'));
 }
 
 function finish(runPath) {
@@ -147,10 +199,12 @@ function finish(runPath) {
         // 没有报价的店（未回复、无货等）也按型号各记一行，用于防重复询价
         const quotes = s.quotes?.length ? s.quotes
             : (s.itemIds ?? run.items.map((i) => i.itemId)).map((id) => ({ itemId: id }));
+        // 沿用的报价保留原记录时间，不按今天重新记，否则防重复窗口会被一直续上，旧报价被无限沿用
+        const time = s.reusedFrom ?? now;
         for (const q of quotes) {
             if (q.price != null && q.price !== '') quoteCount++;
             lines.push(JSON.stringify({
-                time: now, task: run.task, platform, model: modelOf.get(String(q.itemId)) ?? '',
+                time, task: run.task, platform, reusedFrom: s.reusedFrom ?? null, model: modelOf.get(String(q.itemId)) ?? '',
                 shop: s.shop, contact: s.contact ?? '', url: s.url ?? '', status: s.status, reply: s.reply ?? '',
                 price: s.status === '无货' ? '无货' : String(q.price ?? ''),
                 taxIncluded: !!q.taxIncluded, taxRate: q.taxRate ?? null,
@@ -181,6 +235,8 @@ try {
         recent(args[0], args[1]);
     } else if (cmd === 'processed' && args[0]) {
         processed(args[0]);
+    } else if (cmd === 'merge' && args[0]) {
+        merge(args[0]);
     } else if (cmd === 'finish' && args[0]) {
         finish(args[0]);
     } else {
@@ -191,6 +247,7 @@ try {
             '  node records.mjs new-run <任务编号>',
             `  node records.mjs recent <型号> [天数=${SETTINGS.dedupeDays}]`,
             '  node records.mjs processed <任务编号>',
+            '  node records.mjs merge <本次目录>',
             '  node records.mjs finish <run.json>',
         ].join('\n'));
         process.exit(1);
