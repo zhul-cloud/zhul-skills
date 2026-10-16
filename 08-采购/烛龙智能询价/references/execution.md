@@ -29,7 +29,7 @@
 
 **浏览器**：各执行者按 [SKILL.md「准备」](../SKILL.md#准备)读取当前 BrowserOS 使用说明；然后先列出现有标签，再复用窗口。多个代理连接 BrowserOS neo 时可能共享会话或标签组，不同的 `name_session` 名称不等于互相隔离；各代理记下自己打开的标签 ID 和网址，只操作分配给自己的平台和标签。共享登录需要用户处理时，暂停所有受影响的操作，不受影响的平台继续。
 
-- BrowserOS 返回的会话句柄（`session`）可能在头几次调用后变化，之后的调用一律传最近一次结果里给出的句柄。
+- BrowserOS 仅在返回会话句柄（`session`）时，后续调用才传最近的有效句柄；从未返回时不自行构造。工具明确会话 stopped / no longer active 后，不再重复传死句柄，按下节恢复连接和标签归属。
 - 点「客服」打开的聊天页显示为用户的标签页，BrowserOS 不会在这类页面上自动加载站点脚本，要按平台说明「聊天页上的脚本要手动加载」调用。
 - 这些显示为用户标签的聊天页和重复标签都是本次询价打开的，结束时照样关闭；关闭时报「No tab with given id」的，说明已经随同组标签关掉了，忽略即可，最后列一次标签确认没有残留。
 
@@ -39,15 +39,21 @@
 
 先保存平台断点和请求状态，并行时打 `--paused`。调用前先列标签，确认目标标签属本会话 owned 范围；会话命名、能操作该页或同窗存在该页均不能代替核查。无合适目标时在可用窗口创建任务页或按当前能力恢复归属，不用新窗掩盖登录态问题；无法安全归属时记录阻塞并上报。
 
-1. 发现阻塞的执行者为唯一 owner，创建请求后立即持久化平台/ERP 写回范围、owner、`requestId`、目标标签和网址、状态、创建时刻、同一阻塞事件的核验失败次数，并通知主代理。已有未决请求先续接，不另建；共享会话只由一个 owner 消费，其他受影响操作暂停，独立平台继续。
+1. 发现阻塞的执行者为唯一 owner，创建请求后立即按[人助记录](run-protocol.md#人助记录与解除)保存范围、owner、`requestId`、目标标签/网址、状态、创建时刻和同阻塞事件核验失败次数，并通知主代理。已有未决请求先续接，不另建；共享会话只由一个 owner 消费，其他受影响操作暂停，独立平台继续。
 2. 返回 `waiting` 时，owner 留在本轮持续 `await_human_help` 原请求，直至 `resolved`、`cancelled` 或 `timed_out`，不操作受阻页面、不用 final 结束轮次。官方当前默认每个请求总时限为 **20 分钟，自创建起计算**，所有轮次适用；单次约 75 秒返回 `waiting` 不等于超时，继续 await 不重置总时限。此值不是技能配置，不虚构 `timeout` 参数。首次调用已返回终态时直接处理。
-3. 用户按 **Hand back** 返回 `resolved` 后，owner 自动核验原目标页；不要求用户回主聊天输入「继续」或「好了」。实际解除才清暂停、重置该阻塞事件的失败次数，检查原 `deadline` 并先读停机期间的新回复，再继续。`resolved` 本身不证明登录/验证成功，也不扩大业务授权。
+3. 用户按 **Hand back** 返回 `resolved` 后，owner 自动核验原目标页；不要求用户回主聊天输入「继续」或「好了」。先保留 `verified:false`，实际解除才保存 `verified:true` / `verifiedAt` 并清暂停、重置失败次数，检查原 `deadline` 并先读停机期间的新回复，再继续。`resolved` 本身不证明登录/验证成功，也不扩大业务授权。
 4. 第一次 `resolved` 后核验仍未解除，记录失败次数 1，再申请一次人助；第二次核验仍失败即该平台 `status: "interrupted"`、写 `interruption.reason`，停止该平台本轮执行。次数按同一阻塞事件累计，换请求不重置，只有页面实际解除才重置。任一次 `timed_out` 或 `cancelled` **立即中断**受影响平台，不自动重试；其他平台继续至结束，本轮停在当前 IQ，不取下一任务。ERP 人助失败只中断 ERP 写回，本地询价可独立完成并留存，批次不继续下一 IQ。
 5. owner 仍等待时不重复唤醒。owner 意外空闲时，主代理只续跑原 owner 消费持久化 `requestId`；换 owner 前确认旧执行停止并交接原请求与最新文件，不创建第二请求。用户「停止询价」优先于后到的 `resolved`：停止全部执行及 ERP 写入，保存断点，不自动恢复。
 
-**当前接口的取消错误适配**：人助工具返回 `isError: true` 且 `structuredContent.cancellationKind === "cockpit.operator-cancelled"` 时，已确证当前 BrowserOS 会话被人工取消。保留原始返回结构，将执行分类记为 `cancelled`；原返回没有 `status` 时记 `nativeStatus: null`，并以 `statusSource: "structuredContent.cancellationKind"` 标明分类依据，不补造原生 `status` 或 `timed_out`。按第 4 条立即中断受影响平台（ERP 人助仅中断写回），不新建请求、不盲目继续 await、不继续操作该会话页面；其他平台照常完成，本轮停在当前 IQ。只有上述明确结构适用此分类，普通工具错误不能当作人工取消；用户全局停止仍优先，按停止全部执行及 ERP 写入处理。
+**当前接口的取消错误适配**：人助工具返回 `isError: true` 且 `structuredContent.cancellationKind === "cockpit.operator-cancelled"` 时，已确证当前 BrowserOS 会话被人工取消。保留原始返回结构，将执行分类记为 `cancelled`；原返回没有 `status` 时记 `nativeStatus: null`，并以 `statusSource: "structuredContent.cancellationKind"` 标明分类依据，不补造原生 `status` 或 `timed_out`。未返回请求 ID 时记 `requestId:null`，不 await 不存在的 ID。按第 4 条立即中断受影响平台（ERP 人助仅中断写回），不新建请求、不盲目继续 await、不继续操作该会话页面；其他平台照常完成，本轮停在当前 IQ。只有上述明确结构适用此分类，普通工具错误不能当作人工取消；用户全局停止仍优先，按停止全部执行及 ERP 写入处理。
 
 恢复同 IQ 时先执行 [原 run 恢复与防重复](run-protocol.md#原-run-恢复与防重复)，读取最新平台文件及未决人助。`completed` 不重问；`interrupted` 先读停止期间的新回复，核对每条未决发送，再判断超时。保留 `sentAt`、`followUpAt`、`followUps`、`answeredTopics`、`thankYou` 和原 `deadline`；超时按店家消息发送时刻判定。真实报价即使读取较晚仍可保存本地/草稿；消息本身已过等待时限或店已真正结束时只读提取，不恢复对话、补问或道谢。未知发送结果不能盲重发。
+
+### BrowserOS 会话失效或重连
+
+会话失效先持久化原 run、平台进度、未决发送和人助，不把连接错误当业务超时。明确会话 stopped / no longer active 时，下一次连接调用省略旧 session；连接不可用按当前 BrowserOS 技能排查，不换浏览器或用新窗口代替恢复。新连接第一步 `tabs action:"list"`，按持久化标签组 ID、任务名和网址确认原任务组；只有确认旧 owner 已停止、目标确属本任务后，才按当前工具用 `tabs action:"new", groupId:<原组ID>` 恢复归属，再复查 owned 标签，不抢其他任务组。当前版本仅 action:new 能 reclaim，其他 action 传 groupId 不成立。
+
+归属恢复后先核对原人助事件：仍有效且未决的由唯一 owner 续接；明确取消/超时已终态的不再 await。只有用户新一轮启动并完成[恢复核验记录](run-protocol.md#人助记录与解除)，才解除本轮阻塞；仍需登录/验证则在安全归属页申请当前人助。BrowserOS 连接恢复不证明 ERP/电商已登录，也不清除未知发送或提交尝试；ERP 提交已发/未知仍只读 verify 原 payload。
 
 ## 打卡与监控
 
@@ -65,7 +71,7 @@
 
 **平台完成即存草稿**：平台先持久化关键动作和最终结果、自检通过并通知主代理。主代理是唯一串行 ERP 写入者，执行 `records.mjs merge "<本次目录>" --partial <平台...>` 合并指定已持久快照，再用 `erp-items "<本次目录>/run.json" --draft` 生成已有报价并按 [ERP 协议](erp-api.md#草稿核对提交一次与再核对)存草稿、核对。其他平台继续，不等待全部结束才保存。ERP 不可用仍保留平台文件及待写回结果，不让平台自行写 ERP。
 
-**正式提交守卫**：仅所有平台均真正 `completed` 或用户明确跳过，才默认 `merge` 并生成正式输入。暂停、`waiting`、`interrupted`、卡住/损坏收尾及 `watch finished` 都不证明业务完成。任一平台因人工失败中断时，只能留草稿；其他平台做完后本轮在此 IQ 结束，不取下一任务。
+**正式提交守卫**：仅所有平台均真正 `completed` 或用户明确跳过，且平台/ERP 人助都已核验解除，才默认 `merge` 并生成正式输入。暂停、`waiting`、未核验 `resolved`、`interrupted`、卡住/损坏收尾及 `watch finished` 都不证明业务完成。任一平台因人工失败中断时，只能留草稿；其他平台做完后本轮在此 IQ 结束，不取下一任务。ERP 人助未解除时仅保存本地结果/payload，不调用 ERP save。
 
 `merge` 失败时：格式错误可修正字段，不改报价事实；平台文件缺失或损坏时，保留原文件证据，让已停止的原执行者仅重写一次记录，禁止恢复询价或发送。仍失败则标 `interrupted` 和明确 `incompleteItems`，不能假写 `skipped` 代替故障，也不凭印象补价格。能核验的其他平台继续代存草稿，无法确认的报价不写 ERP。
 
@@ -120,5 +126,5 @@
 | 子代理报错返回、中途出错 | 先查代理状态；等待超时不等于失败。确认原代理停止后，读取 `run-<平台>.json` 并核对已发送消息，再恢复原代理或重派；无法确认停止则暂停该平台，仍失败时保存 interrupted 断点并说明，不假写业务完成 |
 | 所用的 AI 派发子代理失败 | 先停止并核实已启动的平台代理，读取已有进度后改用单代理交替推进，在汇报里说明；无法确认停止的平台不重复接管 |
 | 站点脚本调用不到 | 先打开该域名的页面，下一次 `run` 才能调用；仍不行就按该平台说明里的手动步骤操作 |
-| 提交回价失败 | 按 [erp-api.md「ERP 错误与重试边界」](erp-api.md#erp-错误与重试边界)处理：仅提交前草稿可纠错重试，同错最多改两次；已发或发送状态未知的 submissionAttempt 只用原 payload 只读核对、转人工；仅 helper 明确 writeAttempted:false 的 not_sent 可修复后以原 payload 重试，不凭错误名判断 |
+| 草稿/提交回价失败 | 按 [erp-api.md「ERP 错误与重试边界」](erp-api.md#erp-错误与重试边界)处理：只读请求或明确 writeAttempted:false 的 save 可按原限额重试；已发/未知 save（含草稿）只用原 payload 和原基线 verify，登录恢复不授权重放；正式提交仅明确 not_sent 可修复后用原 payload 重试，不凭错误名判断 |
 | 型号已报给客户（只读） | 跳过该型号，汇报里说明 |

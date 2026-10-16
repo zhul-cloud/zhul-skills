@@ -13,11 +13,11 @@
 | `task` | `taskId` | `run` 及同级 `snapshot`：任务信息和首次持久化基线 |
 | `snapshot` | `taskId` | 只读当前 ERP 的完整快照，用于与持久化基线对账 |
 | `save` | `taskId`、`submit`、`items`、`skipItemIds`、必填 `expectedSnapshot`（完整持久化基线） | 存草稿或提交回价、返回实际写入 itemIds；对账冲突返回 ERP_CONFLICT，不发 PUT |
-| `verify` | `taskId`、`submitted`、`items`、`skipItemIds`（与 `save` 相同） | `mismatches`、`inDoneList`、`filledCount`、同次 GET 的 `snapshot` |
+| `verify` | `taskId`、`submitted`、`items`、`skipItemIds`、原 `save` 的 `expectedSnapshot` | `mismatches`、`verifiedItemIds`、`inDoneList`、`filledCount`、同次 GET 的 `snapshot` |
 
-- 请求在 ERP 标签页里发出：令牌取自页面的登录状态，不离开浏览器，不写进对话和任何记录；过期时按 ERP 前端同样的方式续期，续不了返回 `ERP_LOGIN`。
+- 请求在 ERP 标签页里发出：令牌取自页面的登录状态，不离开浏览器，不写进对话和任何记录；GET 遇 HTTP 401 或响应 `code:401` 时最多续期并重读一次，续不了返回 `ERP_LOGIN`。PUT 已进入发送后遇任一种授权失败都不续期重发，返回 `ERP_LOGIN` 和 `writeAttempted:true`，登录恢复后只读核对原 payload。
 - 每次请求都按 `CONTRACT` 核对响应结构，对不上返回 `ERP_CONTRACT`（见本文「ERP 错误与重试边界」）；ERP 多出来的字段列在 `extraFields`。
-- `skipItemIds` 是辅助脚本的跳过列表，不是发给 ERP 服务器的新字段；每个 ID 必须属于本任务、不得重复，也不得与 `items` 重叠，否则返回 `SKILL_INPUT`。`verify` 核对本次 `items`，允许跳过型号保留旧草稿。
+- `skipItemIds` 是辅助脚本的跳过列表，不是发给 ERP 服务器的新字段；每个 ID 必须属于本任务、不得重复，也不得与 `items` 重叠，否则返回 `SKILL_INPUT`。`verify` 用原基线重建完整写入计划，核对新报价、保留旧报价、自动带入的草稿、无货说明、供应商及附件，并拒绝本次替换状态中的额外/重复行；跳过型号的旧草稿保持原状，审核流合法旧已通过版本仍可并存。
 - `save` 的规则与 ERP 页面「提交回价」一致：同一型号上本人原有的报价行照带，同一平台同一店铺可合法补充或纠正，但首次发现已有人工同店内容须核对保留或有明确变更授权，不直接用新报价覆盖；基线未漂移后才按本次内容替换，并保留实际被替换版本上的原附件（同店草稿优先，不挪用未被替换版本的附件）；提交时其他型号上的草稿一并提交，`skipItemIds` 里的故障未完成型号除外；已报给客户的型号跳过。技能不新增上传附件。
 - 内容较多时 `erpApi` 会分段读写，单次调用一般在几秒内；整个任务的报价放在一次 `save` 里即可。
 - ERP 接口改了、技能还没同步时，维护者按[采购维护说明「ERP 接口改了怎么同步」](../../README.md#erp-接口改了怎么同步)更新 `CONTRACT` 并升版本。
@@ -40,7 +40,7 @@
 
 ## 草稿、核对、提交一次与再核对
 
-所有 ERP 写入由主代理唯一、串行执行；平台代理先持久化本平台结果，再请求主代理代存，不自行调用 ERP。同一 IQ 只存在一个写入者。helper 的 snapshot GET → 对账 → PUT 不是服务器原子锁，无法阻止读写间外部修改；不把它宣称为事务或分布式锁。
+所有 ERP 写入由主代理唯一、串行执行；平台代理先持久化本平台结果，再请求主代理代存，不自行调用 ERP。同一 IQ 只存在一个写入者。ERP 人助尚未按[人助记录](run-protocol.md#人助记录与解除)核验解除时，仅保存本地结果和 payload，不调用 save；平台人助不阻止其他已完成平台的草稿写回。helper 的 snapshot GET → 对账 → PUT 不是服务器原子锁，无法阻止读写间外部修改；不把它宣称为事务或分布式锁。
 
 每个平台完成即部分合并、生成草稿并核对；其他平台继续。任何平台仍 running/interrupted、存在未知发送或 stopAfterTask 时只留草稿，禁止正式提交。全部平台真正 completed/用户明确跳过后才完整合并并正式提交。正常报价截止按业务完成收尾、带 incompleteItems 的情形仍保留原有有效报价提交和缺价跳过机制。
 
@@ -60,10 +60,10 @@
    | 包邮 | `quotes[].freeShipping`：店家明确说不包邮（运费另计、到付等）时为 `false`，其余按包邮（写 `true` 或不写）；不主动问店家是否包邮（见 [inquiry-rules.md 第 6 节](inquiry-rules.md#6-把回复整理成报价)） |
 
 3. **平台结果即存草稿**：主代理部分合并指定持久快照后执行 `erp-items "<本次目录>/run.json" --draft`，输出已有报价 `{ taskId, items, skipItemIds }`，不把未完成平台推成无货。保存前持久化本次原 payload 和 `draftReceipt`，调用 `{ op: "save", taskId, submit: false, items, skipItemIds, expectedSnapshot: run.erpSnapshot }`。缺基线返回 SKILL_INPUT；对账发现实际写入范围的 ERP 变化返回 ERP_CONFLICT，不 PUT。没有报价则只保留本地结果，不空写草稿。
-4. **草稿核对及基线**：用原 payload 调 `{ op: "verify", taskId, submitted: false, items, skipItemIds }`。仅 `ok: true` 且 `mismatches` 为空算核对成功。将本次 save 返回的实际写入 itemIds 及 verify 同次 GET 的 snapshot 保存回执；只把这些 itemIds 对应的 snapshot.items 合并回持久化 erpSnapshot，其他型号保留原基线，防止吸收并发人工改动。不要另读 snapshot 后全量替换基线。恢复时若 save 回包丢失，先以持久化原 draft payload 明确定义写入范围并逐项 verify；范围或结果不能确认则暂停写回、不盲吸收新值。草稿差异按第 7 条处理。
+4. **草稿核对及基线**：用原 payload 调 `{ op: "verify", taskId, submitted: false, items, skipItemIds, expectedSnapshot }`；expectedSnapshot 必须是本次 save 前持久化的原基线。仅 `ok: true` 且 `mismatches` 为空算核对成功。将本次 save 返回的实际写入 itemIds、verify 的 verifiedItemIds 及同次 GET 的 snapshot 保存回执；只把这些 itemIds 对应的 snapshot.items 合并回持久化 erpSnapshot，其他型号保留原基线，防止吸收并发人工改动。不要另读 snapshot 后全量替换基线。恢复时若 save 回包丢失，先用原 draft payload 和原基线 verify，以 verifiedItemIds 确认完整范围；范围或结果不能确认则暂停写回、不盲吸收新值。草稿差异按第 7 条处理。
 5. **完整提交输入**：所有平台真实完成/明确跳过且无提交阻塞时默认 merge，再执行 `erp-items "<本次目录>/run.json"`。全部调用原样传 items 和 skipItemIds；后者只含无有效报价的未完成型号，其旧草稿保留，不随本次提交。有效报价优先于其他平台无货；正常截止 completed 带 incompleteItems 不阻止其他报价提交。没有任何可提交项不调用 save，转人工并本地收尾。有内容时先持久化该完整 payload，执行 save submit:false（含 expectedSnapshot）和 verify submitted:false，按第 4 条核对并更新实际写入范围基线；包括最终无货项在内的完整草稿核对通过后才进入第 6 条。
 6. **提交一次与核对**：提交前先把最终原 payload 持久化在个人 run 目录，写 `submissionAttempt: { state: "pending", at }`，再调用 `{ op: "save", taskId, submit: true, items, skipItemIds, expectedSnapshot: run.erpSnapshot }`。最终提交按完整持久化基线核对所有实际写入型号，包括自动带入的其他草稿，不换新基线绕过冲突。
-   - 提交后用相同原 payload 调 `{ op: "verify", taskId, submitted: true, items, skipItemIds }`。只有 ok 且 mismatches 为空才写 `submitted: true`、真实 stages.submitted 和 attempt.confirmed。需要审核账号的待审核算成功，inDoneList 为 false 不单独算失败；不需要审核时已填数及列表仍按实际结果核对。
+   - 提交后用相同原 payload 调 `{ op: "verify", taskId, submitted: true, items, skipItemIds, expectedSnapshot }`，使用本次正式 PUT 前的原基线。核对包含保留报价和自动带入的其他型号草稿。只有 ok 且 mismatches 为空才写 `submitted: true`、真实 stages.submitted 和 attempt.confirmed。需要审核账号的待审核算成功，inDoneList 为 false 不单独算失败；不需要审核时已填数及列表仍按实际结果核对。
    - 任何已发 PUT 或发送状态未知的尝试（pending/unknown/failed/confirmed）都不能再次 submit；请求中断、结果未知记 unknown，只用原 payload 只读 verify。仅 helper 明确返回 writeAttempted:false（确实未进入 PUT）时可记 state:not_sent；修复后用原 payload 重试，调用前再写 pending。错误名、登录恢复或推断均不能代替未发证据；ERP_BIZ 也必须区分 GET 与 PUT 阶段。明确失败/差异转人工，不把未知结果称为未提交草稿。
 
 ### ERP 错误与重试边界
@@ -72,7 +72,7 @@
    - `ERP_CONTRACT`：缺字段、类型变了、取值不认识或接口不存在时，立即停止 ERP 调用，不提交、不猜字段；独立平台可完成本地结果，本轮不取下一 IQ；告诉用户「ERP 接口已修改，烛龙智能询价没有同步，请更新技能」，把 `problems` 写进汇报和实跑报告。只有新增的 `extraFields` 可继续并记录；本节第 8 条记录收尾照常执行，已收集的报价列在汇报里。
    - `ERP_LOGIN`：按 [人助协议](execution.md#暂停与恢复)请求 ERP 登录；owned 目标页、唯一 owner、20 分钟总时限和两次核验失败边界同平台人助。仅暂停写回，其他平台继续保存本地结果。取消、超时或两次失败后本轮不取下一 IQ、不自动重试写回。
    - `ERP_CONFLICT`：持久化基线与当前实际写入范围不符，helper 不 PUT；停止写回，保留本地报价和差异，核对并保留人工改动或取得明确变更授权。不得用刚读的新 snapshot 静默覆盖旧 baseline。
-   - `ERP_BIZ`（ERP 拒绝内容）和 `SKILL_INPUT`（本地取值错误）：仅尚未执行正式提交的草稿阶段可改正 run.json、重新生成 items/skipItemIds 并重试草稿，同错最多改两次。已发或发送状态未知的 submissionAttempt 只读核对原 payload 并转人工，不纠错重提；仅明确 writeAttempted:false 的 not_sent 可修复后以原 payload 重试。
-   - `ERP_HTTP`：稍等后最多重试一次；已经执行过提交或提交结果不确定时，重试只读核对，不重复 `save submit:true`。仍失败转人工并停止本轮写回与批次，其他平台可完成本地结果，不取下一任务。
-   - **主代理解决不了就转人工**：同一个错误改了两次仍失败、存草稿后 `verify` 的差异改了两次仍在、提交后 `verify` 有差异、`ERP_HTTP` 重试后仍失败时，不再重试，执行 `node "<技能目录>/scripts/records.mjs" manual <任务编号> <原因>`，把任务标记为**需人工处理**。还没执行提交、草稿已保存的，由用户在 ERP 页面核对后提交；未能保存草稿的，在汇报里列出已收集的报价（型号、平台、店铺、单价、含税、货况、货期、包邮），供用户手工填写。已经执行过提交但核对失败，或请求错误使提交结果不确定的，明确写「提交动作已执行但核对失败」或「提交结果未确认」，列出差异，请用户先核实 ERP 当前状态，不称为草稿待提交，不重复提交。正常截止收尾 completed 但尚有缺价 incompleteItems 时，其余有效报价可提交并标记任务需人工处理，说明提交/缺价范围；因子代理卡住、记录损坏或人助失败的平台是 interrupted，只留草稿，不正式提交，其他平台完成后本轮结束当前 IQ。
+   - `ERP_BIZ`（ERP 拒绝内容）和 `SKILL_INPUT`（本地取值错误）：只有本次 save 明确 `writeAttempted:false` 且无先前已发/未知写入时可纠错重试；草稿可改正 run.json 并重新生成 items/skipItemIds，同错最多改两次，正式提交须记 not_sent 并用原 payload 重试。已发或结果未知的 save（含草稿）只用原 payload 和原基线 verify，差异转人工，不纠错重放。
+   - `ERP_HTTP`：只读请求或明确 `writeAttempted:false` 的 save 稍等后最多重试一次；已发或结果未知的 save（含草稿）只重试原 payload / 原基线的只读核对，登录恢复不授权重放。仍失败转人工并停止本轮写回与批次，其他平台可完成本地结果，不取下一任务。
+   - **主代理解决不了就转人工**：允许纠错的同一个错误改了两次仍失败、任何已发 save 的 `verify` 有差异、`ERP_HTTP` 只读核对重试后仍失败时，不再重试，执行 `node "<技能目录>/scripts/records.mjs" manual <任务编号> <原因>`，把任务标记为**需人工处理**。还没执行提交、草稿已保存的，由用户在 ERP 页面核对后提交；草稿结果未确认的先核实当前 ERP，不称为未保存、不重放。未能保存草稿的，在汇报里列出已收集的报价（型号、平台、店铺、单价、含税、货况、货期、包邮），供用户手工填写。已经执行过提交但核对失败，或请求错误使提交结果不确定的，明确写「提交动作已执行但核对失败」或「提交结果未确认」，列出差异，请用户先核实 ERP 当前状态，不称为草稿待提交，不重复提交。正常截止收尾 completed 但尚有缺价 incompleteItems 时，其余有效报价可提交并标记任务需人工处理，说明提交/缺价范围；因子代理卡住、记录损坏或人助失败的平台是 interrupted，只留草稿，不正式提交，其他平台完成后本轮结束当前 IQ。
 8. 写入本地记录：不管有没有提交成功，都执行 `node "<技能目录>/scripts/records.mjs" finish "<本次目录>/run.json"`。执行前排除仅挑中、未实际发送且非沿用报价/真实公开挂牌的候选店，不补造 `sentAt`，避免污染防重复记录。它把实际询问、沿用及真实公开挂牌的各型号写进询价记录（包括同店只给部分型号报价时其余已询问型号的无价记录，用于防重复），保留报价备注，下次能沿用已收到的报价，并按 submitted 记录提交事实。finish 按 run 目录及快照幂等；保存本地历史不是提交或完成证明，恢复继续原断点，不能据此重发。

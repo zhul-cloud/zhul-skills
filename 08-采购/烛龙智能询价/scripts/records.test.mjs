@@ -649,6 +649,66 @@ test('explicit no-write confirmation can retry and rearming the intent prevents 
     assert.notEqual(f.cli('erp-items', f.path).status, 0);
 });
 
+test('human help must be verified before platform completion or final ERP payload', (t) => {
+    const f = fixture(t);
+    const blocked = [
+        { status: 'waiting' }, { status: 'pending' }, { status: 'unknown' },
+        { status: 'cancelled', verified: true, verifiedAt: now() }, { status: 'timed_out' },
+        { status: 'resolved' }, { status: 'resolved', verified: false, verifiedAt: now() },
+        { status: 'resolved', verified: true }, { status: 'resolved', verified: true, verifiedAt: 'bad-time' },
+    ];
+    for (const humanHelp of blocked) {
+        f.write('run-淘宝.json', part('淘宝', { shops: [shop()], humanHelp }));
+        f.write('run-1688.json', part('1688'));
+        assert.notEqual(f.cli('check', f.dir, '淘宝').status, 0);
+        assert.notEqual(f.cli('merge', f.dir).status, 0);
+        f.write('run.json', run({ shops: [shop()], humanHelp }));
+        assert.notEqual(f.cli('erp-items', f.path).status, 0);
+        assert.equal(f.json('erp-items', f.path, '--draft').items[0].quotes[0].unitPrice, 100);
+    }
+    const verified = { status: 'resolved', nativeStatus: null, requestId: null, resolutionSource: 'recovery-check', verified: true, verifiedAt: now() };
+    f.write('run.json', run());
+    f.write('run-淘宝.json', part('淘宝', { shops: [shop()], humanHelp: verified, humanHelpHistory: [{ status: 'cancelled', nativeStatus: null }] }));
+    f.ok('check', f.dir, '淘宝');
+    f.ok('merge', f.dir);
+    assert.deepEqual(JSON.parse(readFileSync(f.path, 'utf8')).platformHumanHelp['淘宝'], verified);
+    assert.equal(f.json('erp-items', f.path).items[0].quotes[0].unitPrice, 100);
+});
+
+test('partial merge preserves pending human help while allowing local draft and later session recovery', (t) => {
+    const f = fixture(t);
+    const opened = f.json('open-run', 'IQ-SESSION');
+    const dir = opened.runDir;
+    const deadline = ago(-5);
+    const humanHelp = { owner: 'taobao-owner', requestId: 'request-1', status: 'waiting', createdAt: ago(1), failedChecks: 0, tabId: 23, url: 'https://example.invalid/chat' };
+    const pendingMessage = { kind: 'followUp', text: '请问货期？', preparedAt: ago(1), state: 'pending' };
+    const value = run({ task: 'IQ-SESSION', deadline, submissionAttempt: { state: 'unknown', at: now() }, submissionPayload: { taskId: 1, items: [{ itemId: 11, quotes: [] }] } });
+    writeFileSync(join(dir, 'run.json'), JSON.stringify(value));
+    writeFileSync(join(dir, 'run-淘宝.json'), JSON.stringify(part('淘宝', { status: 'interrupted', stages: {}, humanHelp, interruption: { reason: 'BrowserOS session失效' }, shops: [shop({ pendingMessage })] })));
+    writeFileSync(join(dir, 'run-1688.json'), JSON.stringify(part('1688')));
+    f.ok('merge', dir, '--partial', '淘宝');
+    const before = readFileSync(join(dir, 'run.json'), 'utf8');
+    const resumed = f.json('open-run', 'IQ-SESSION');
+    assert.equal(resumed.runDir, dir);
+    assert.equal(resumed.resumed, true);
+    assert.equal(resumed.stopAfterTask, true);
+    assert.equal(readFileSync(join(dir, 'run.json'), 'utf8'), before);
+    const current = JSON.parse(before);
+    assert.deepEqual(current.platformHumanHelp['淘宝'], humanHelp);
+    assert.deepEqual(current.shops[0].pendingMessage, pendingMessage);
+    assert.equal(current.deadline, deadline);
+    assert.deepEqual(current.submissionPayload, value.submissionPayload);
+    assert.notEqual(f.cli('erp-items', join(dir, 'run.json'), '--draft').status, 0);
+    delete current.submissionAttempt;
+    writeFileSync(join(dir, 'run.json'), JSON.stringify(current));
+    assert.equal(f.json('erp-items', join(dir, 'run.json'), '--draft').items[0].itemId, 11);
+    current.stopAfterTask = false;
+    current.platformStates = { '淘宝': 'completed', '1688': 'completed' };
+    current.shops[0].pendingMessage.state = 'cancelled';
+    writeFileSync(join(dir, 'run.json'), JSON.stringify(current));
+    assert.notEqual(f.cli('erp-items', join(dir, 'run.json')).status, 0);
+});
+
 test('watch waits for the other platform after one interruption and then reports interruption', (t) => {
     const f = fixture(t);
     f.write('run-淘宝.json', part('淘宝', { status: 'interrupted', stages: {}, interruption: { reason: '等待人工恢复' } }));

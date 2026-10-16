@@ -412,13 +412,16 @@ function loadRun(path) {
 
 const validTime = (value) => typeof value === 'string' && value.trim() !== '' && !Number.isNaN(Date.parse(value));
 const partState = (part) => part.status ?? (part.skipped || part.stages?.repliesDone ? 'completed' : 'running');
+const humanHelpBlocked = (help) => help != null && (help.status !== 'resolved' || help.verified !== true || !validTime(help.verifiedAt));
 
 function finalProblems(run) {
     const problems = [];
     if (simulated(run)) problems.push('模拟 run 不得提交');
     if (!run.platforms?.length) problems.push('缺少 platforms');
+    if (humanHelpBlocked(run.humanHelp)) problems.push('ERP 人助尚未核验解除，不能正式提交');
     for (const platform of run.platforms ?? []) {
         if (run.platformStates?.[platform] !== 'completed') problems.push(`${platform} 尚未完成（${run.platformStates?.[platform] ?? '缺少结果'}）`);
+        if (humanHelpBlocked(run.platformHumanHelp?.[platform])) problems.push(`${platform} 人助尚未核验解除，不能正式提交`);
     }
     if (run.stopAfterTask) problems.push('本轮因中断停止，恢复并核对后才能提交');
     for (const shop of run.shops ?? []) if (shop.pendingMessage?.state === 'pending') problems.push(`${shop.shop} 有未确认发送，先核对聊天界面`);
@@ -441,6 +444,7 @@ function validatePart(run, part, platform, partial = false) {
     if (state === 'interrupted' && !String(part.interruption?.reason ?? '').trim()) problems.push('interrupted 需要 interruption.reason');
     if (!partial && state !== 'completed') problems.push(`平台 ${state}，只能用 --partial 保存中途快照`);
     if (state === 'completed' && (part.shops ?? []).some((s) => s.pendingMessage?.state === 'pending')) problems.push('已完成平台仍有未确认发送，先核对聊天界面');
+    if (state === 'completed' && humanHelpBlocked(part.humanHelp)) problems.push('已完成平台的人助尚未核验解除，需要 resolved、verified:true 和有效 verifiedAt');
     return problems;
 }
 
@@ -481,6 +485,7 @@ function merge(runDir, args = []) {
         if (part.skipped) run.skippedPlatforms.push({ platform, reason: part.skipped });
         run.platformStages = { ...(run.platformStages ?? {}), [platform]: part.stages ?? {} };
         run.platformStates = { ...(run.platformStates ?? {}), [platform]: partState(part) };
+        if (part.humanHelp != null) run.platformHumanHelp = { ...(run.platformHumanHelp ?? {}), [platform]: part.humanHelp };
         run.platformInterruptions = { ...(run.platformInterruptions ?? {}) };
         delete run.platformInterruptions[platform];
         if (partState(part) === 'interrupted') {
