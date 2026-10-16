@@ -7,6 +7,7 @@
 //   node records.mjs processed <任务编号>         查询该任务是否已在本机提交过回价
 //   node records.mjs merge <本次目录>             把子代理写的各平台记录 run-<平台>.json 合并进 run.json
 //   node records.mjs finish <run.json>            写入询价记录，并把任务记为已处理
+//   node records.mjs stats [天数]                 统计近 N 天询价的结束原因和店家提问的类型（天数默认 30）
 //
 // run.json 格式见 SKILL.md「run.json」。
 
@@ -34,6 +35,8 @@ const HELPERS_DIR = process.env.BROWSEROS_HELPERS_DIR || join(
 const SETTINGS = JSON.parse(readFileSync(join(SKILL_DIR, 'settings.json'), 'utf8'));
 
 const STATUSES = ['已回复', '无货', '挂牌价', '未回复', '自动回复'];
+// 因店家提问停止聊天的结束原因，这两种要在 stopQuestion 里记下问题类型，供 stats 统计
+const STOP_REASONS = ['店家提问超出范围', '店家重复提问'];
 const normModel = (m) => String(m ?? '').normalize('NFKC').toLowerCase().replace(/[^a-z0-9]/g, '');
 
 function readConfig() {
@@ -129,6 +132,9 @@ function validateRun(run) {
         if (s.reusedFrom != null && Number.isNaN(Date.parse(s.reusedFrom))) {
             problems.push(`${at}：reusedFrom 应为原报价记录的时间`);
         }
+        if (STOP_REASONS.includes(s.endReason) && !String(s.stopQuestion?.type ?? '').trim()) {
+            problems.push(`${at}：结束原因是「${s.endReason}」，要在 stopQuestion 里填问题类型 type`);
+        }
     });
     return problems;
 }
@@ -209,6 +215,7 @@ function finish(runPath) {
                 price: s.status === '无货' ? '无货' : String(q.price ?? ''),
                 taxIncluded: !!q.taxIncluded, taxRate: q.taxRate ?? null,
                 condition: q.condition ?? '', leadTime: q.leadTime ?? '', sentAt: s.sentAt ?? '',
+                endReason: s.endReason ?? '', stopQuestion: s.stopQuestion ?? null,
             }));
         }
     }
@@ -221,6 +228,48 @@ function finish(runPath) {
         result: run.submitted ? 'submitted' : 'not-submitted', quotes: quoteCount, platforms: [...platforms],
     }) + '\n');
     console.log(`已写入询价记录 ${lines.length} 条；任务 ${run.task} 记为${run.submitted ? '已提交' : '未提交'}`);
+}
+
+/**
+ * 统计近 N 天询价的结束原因，以及因店家提问而停止聊天的问题类型，供维护者判断是否扩大答复范围。
+ * 沿用的报价不算（这次没有发消息）；同一任务里的同一家店有多个型号时只算一次。
+ */
+function stats(arg) {
+    const days = Number(arg) > 0 ? Number(arg) : 30;
+    const since = Date.now() - days * 86400000;
+    const shops = new Map();
+    for (const r of readJsonl(RECORDS)) {
+        if (r.reusedFrom == null && Date.parse(r.time) >= since) shops.set(`${r.task}|${r.platform}|${r.shop}`, r);
+    }
+    const total = shops.size;
+    const pct = (n) => `${((n * 100) / total).toFixed(1)}%`;
+    const reasons = new Map();
+    const types = new Map();
+    // 从最近的记录往前数，举例时取最近的店家原话
+    for (const r of [...shops.values()].sort((a, b) => Date.parse(b.time) - Date.parse(a.time))) {
+        const reason = r.endReason || '未记录';
+        reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
+        if (!STOP_REASONS.includes(r.endReason)) continue;
+        const key = `${r.endReason} · ${r.stopQuestion?.type || '未分类'}`;
+        const t = types.get(key) ?? { n: 0, examples: [] };
+        t.n++;
+        const text = String(r.stopQuestion?.text ?? '').trim();
+        if (text && t.examples.length < 3) t.examples.push(`「${text.slice(0, 40)}」`);
+        types.set(key, t);
+    }
+    if (!total) {
+        console.log(`近 ${days} 天没有询价记录`);
+        return;
+    }
+    const lines = [`近 ${days} 天询价 ${total} 家店（沿用的报价不算，同一任务里的同一家店只算一次）`, '', '结束原因：'];
+    for (const [k, n] of [...reasons].sort((a, b) => b[1] - a[1])) lines.push(`  ${k}：${n} 家（${pct(n)}）`);
+    lines.push('', '因店家提问停止聊天，按问题类型：');
+    if (!types.size) lines.push('  无');
+    for (const [k, t] of [...types].sort((a, b) => b[1].n - a[1].n)) {
+        lines.push(`  ${k}：${t.n} 家（${pct(t.n)}）${t.examples.length ? '，例：' + t.examples.join(' ') : ''}`);
+    }
+    lines.push('', '例子是店家原话，属于公司内部数据，不要放进公开仓库。');
+    console.log(lines.join('\n'));
 }
 
 const [cmd, ...args] = process.argv.slice(2);
@@ -239,6 +288,8 @@ try {
         merge(args[0]);
     } else if (cmd === 'finish' && args[0]) {
         finish(args[0]);
+    } else if (cmd === 'stats') {
+        stats(args[0]);
     } else {
         console.error([
             '用法：',
@@ -249,6 +300,7 @@ try {
             '  node records.mjs processed <任务编号>',
             '  node records.mjs merge <本次目录>',
             '  node records.mjs finish <run.json>',
+            '  node records.mjs stats [天数=30]',
         ].join('\n'));
         process.exit(1);
     }
