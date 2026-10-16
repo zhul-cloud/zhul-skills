@@ -4,7 +4,7 @@
 
 | 技能 | 版本 | 用途 |
 |---|---|---|
-| [烛龙AI询价](烛龙AI询价/SKILL.md) | 1.4.0 | AI 自动询价：读取 ERP 询价任务 → 在淘宝、1688 同时找店询价 → 在任务页面填报价并提交回价（一次一个任务） |
+| [烛龙AI询价](烛龙AI询价/SKILL.md) | 2.0.0 | AI 自动询价：通过 ERP 接口读取询价任务 → 在淘宝、1688 同时找店询价 → 通过 ERP 接口提交回价（一次一个任务） |
 
 使用方法、询价规则、生成的文件及位置见 [烛龙AI询价/使用手册.md](烛龙AI询价/使用手册.md)；版本变化见 [烛龙AI询价/CHANGELOG.md](烛龙AI询价/CHANGELOG.md)；已讨论但还没实施的功能见 [ROADMAP.md](ROADMAP.md)。
 
@@ -12,7 +12,7 @@
 
 1. **Claude Code 或 Codex**（任选其一，已登录）。两者都通过 npm 安装，装好后电脑上就有 Node.js，技能里的脚本不需要再装其他东西。
 2. **BrowserOS neo**，并把它的 MCP 连接到 Claude Code 或 Codex（在 BrowserOS neo 的 MCP 连接页面一键连接）。
-3. 在 BrowserOS neo 里登录：公司 ERP（AI 使用的采购账号）、淘宝买家账号、1688 买家账号。AI 只使用已有的登录状态，不输入密码。
+3. 在 BrowserOS neo 里登录：公司 ERP（AI 使用的采购账号，建议勾选「记住我」）、淘宝买家账号、1688 买家账号。AI 只使用已有的登录状态，不输入密码；ERP 的接口请求也在 BrowserOS neo 的 ERP 标签页里发出。
 
 ## 发放与安装
 
@@ -40,6 +40,7 @@
 | 挑店标准、话术、回复判断、货况货期对照 | `烛龙AI询价/references/inquiry-rules.md` |
 | 各平台页面操作、机器人标记、结束信号 | `烛龙AI询价/platforms/<平台>.md`（目前有 `taobao.md`、`1688.md`；新平台的说明文件经实跑验证后放进来，该平台即启用） |
 | 站点脚本 | `烛龙AI询价/helpers/<域名>/<脚本名>.md`（BrowserOS neo 站点脚本格式） |
+| ERP 接口（地址、请求参数、响应结构） | `烛龙AI询价/helpers/_erp/erpApi.md` 的 `CONTRACT`（ERP 升级后的同步方法见使用手册 7.2） |
 
 改了上表任何一个文件，都要同步更新 `烛龙AI询价/使用手册.md`，让手册和技能内容保持一致。
 

@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // 本地询价记录工具（零依赖，Node 18+）。数据目录固定为用户主目录下的 .zhul-trade-sourcing（Windows %USERPROFILE%\.zhul-trade-sourcing\，macOS/Linux ~/.zhul-trade-sourcing/）
 //   node records.mjs init [--erp <ERP地址>]       创建数据目录；带 --erp 时保存 ERP 地址。输出当前配置
-//   node records.mjs install-helpers [--force]    把技能自带的站点脚本装进 BrowserOS neo；本机已有不同内容时默认不覆盖
+//   node records.mjs install-helpers [--force]    把技能自带的站点脚本装进 BrowserOS neo；本机已有不同内容时默认不覆盖（ERP 接口脚本总是覆盖）
 //   node records.mjs new-run <任务编号>           新建本次任务文件夹，输出路径
 //   node records.mjs recent <型号> [天数]         查询该型号近 N 天问过的店家（防止重复询价），天数默认取 settings.json 的 dedupeDays
 //   node records.mjs processed <任务编号>         查询该任务是否已在本机提交过回价
 //   node records.mjs merge <本次目录>             把子代理写的各平台记录 run-<平台>.json 合并进 run.json
+//   node records.mjs erp-items <run.json>         把 run.json 里的报价整理成 ERP 接口脚本 erpApi 的 save / verify 输入
 //   node records.mjs finish <run.json>            写入询价记录，并把任务记为已处理
 //   node records.mjs stats [天数]                 统计近 N 天询价的结束原因和店家提问的类型（天数默认 30）
 //
@@ -71,7 +72,7 @@ function installHelpers(args) {
     }
     const src = join(SKILL_DIR, 'helpers');
     const result = { installed: [], unchanged: [], kept: [] };
-    for (const host of readdirSync(src)) {
+    for (const host of readdirSync(src).filter((h) => !h.startsWith('_'))) {
         for (const file of readdirSync(join(src, host)).filter((f) => f.endsWith('.md'))) {
             const from = join(src, host, file);
             const to = join(HELPERS_DIR, host, file);
@@ -88,10 +89,87 @@ function installHelpers(args) {
             }
         }
     }
+    // ERP 接口脚本：ERP 地址每台电脑不同，按 config.json 的 erpUrl 装进对应域名；接口约定以技能版本为准，总是覆盖
+    const erpUrl = readConfig().erpUrl;
+    if (!erpUrl) {
+        result.erp = '未配置 ERP 地址，先执行 init --erp <ERP地址>，再执行 install-helpers';
+    } else {
+        const host = new URL(erpUrl).hostname;
+        const erpSrc = join(src, '_erp');
+        for (const file of readdirSync(erpSrc).filter((f) => f.endsWith('.md'))) {
+            const text = readFileSync(join(erpSrc, file), 'utf8').replace(/^host: ".*"$/m, `host: "${host}"`);
+            const to = join(HELPERS_DIR, host, file);
+            const name = `${host}/${file.replace(/\.md$/, '')}`;
+            if (existsSync(to) && readFileSync(to, 'utf8') === text) {
+                result.unchanged.push(name);
+            } else {
+                mkdirSync(dirname(to), { recursive: true });
+                writeFileSync(to, text);
+                result.installed.push(name);
+            }
+        }
+    }
     console.log(JSON.stringify(result, null, 2));
     if (result.kept.length) {
         console.log('kept 里的脚本本机已有不同内容，未覆盖。确认要换成技能自带版本时加 --force。');
     }
+}
+
+const CHANNELS = ['淘宝', '1688'];
+
+/**
+ * 把 run.json 里要填进 ERP 的报价整理成 erpApi 的 save / verify 输入（文字取值，由 erpApi 按 ERP 字典换成码值）。
+ * 只取已回复、挂牌价且有单价的店；没有任何价格、记了无货的型号标无货。
+ */
+function erpItems(runPath) {
+    const run = loadRun(runPath);
+    if (!run.taskId) {
+        console.error('run.json 缺少 taskId（ERP 任务 ID），请用 erpApi 的 task 结果写入');
+        process.exit(2);
+    }
+    const ids = new Set(run.items.map((i) => String(i.itemId)));
+    const byItem = new Map();
+    const problems = [];
+    for (const s of run.shops ?? []) {
+        if (!['已回复', '挂牌价'].includes(s.status)) continue;
+        if (!CHANNELS.includes(s.platform)) {
+            problems.push(`${s.shop}：平台「${s.platform}」不是 ${CHANNELS.join(' / ')}`);
+            continue;
+        }
+        for (const q of s.quotes ?? []) {
+            if (q.price == null || q.price === '' || q.price === '无货') continue;
+            const key = String(q.itemId);
+            if (!ids.has(key)) continue;
+            const list = byItem.get(key) ?? [];
+            if (list.some((x) => x.channel === s.platform && x.shopName === s.shop)) {
+                problems.push(`${s.shop}：同一型号（itemId ${q.itemId}）在 ${s.platform} 有两条报价`);
+                continue;
+            }
+            list.push({
+                channel: s.platform, shopName: s.shop, unitPrice: Number(q.price), taxIncluded: !!q.taxIncluded,
+                taxRate: q.taxIncluded ? Number(q.taxRate) : null, condition: q.condition || '待确认',
+                leadTime: q.leadTime || '', note: String(q.note ?? '').slice(0, 300),
+            });
+            byItem.set(key, list);
+        }
+    }
+    if (problems.length) {
+        console.error('报价整理有问题：\n- ' + problems.join('\n- '));
+        process.exit(2);
+    }
+    const items = [];
+    for (const i of run.items) {
+        const quotes = byItem.get(String(i.itemId)) ?? [];
+        if (quotes.length) {
+            items.push({ itemId: Number(i.itemId), quotes });
+            continue;
+        }
+        const ns = (run.noStock ?? []).filter((n) => String(n.itemId) === String(i.itemId));
+        if (ns.length) {
+            items.push({ itemId: Number(i.itemId), noStock: true, noStockNote: ns.map((n) => n.note).filter(Boolean).join('；').slice(0, 300), quotes: [] });
+        }
+    }
+    console.log(JSON.stringify({ taskId: Number(run.taskId), items }));
 }
 
 function newRun(taskCode) {
@@ -286,6 +364,8 @@ try {
         processed(args[0]);
     } else if (cmd === 'merge' && args[0]) {
         merge(args[0]);
+    } else if (cmd === 'erp-items' && args[0]) {
+        erpItems(args[0]);
     } else if (cmd === 'finish' && args[0]) {
         finish(args[0]);
     } else if (cmd === 'stats') {
@@ -299,6 +379,7 @@ try {
             `  node records.mjs recent <型号> [天数=${SETTINGS.dedupeDays}]`,
             '  node records.mjs processed <任务编号>',
             '  node records.mjs merge <本次目录>',
+            '  node records.mjs erp-items <run.json>',
             '  node records.mjs finish <run.json>',
             '  node records.mjs stats [天数=30]',
         ].join('\n'));
