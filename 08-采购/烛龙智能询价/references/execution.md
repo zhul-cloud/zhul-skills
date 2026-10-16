@@ -17,7 +17,7 @@
 
 **派发**：模型和思考深度按 `subagents` 里所用 AI 的配置（Claude Code 用 `subagents.claude`，Codex 用 `subagents.codex`；留空的项沿用默认）。给每个子代理的任务说明要写清：
 
-- 平台名称，以及它要读的文件：[SKILL.md「关键红线」](../SKILL.md#关键红线)、[inquiry-rules.md](inquiry-rules.md)、[run-protocol.md「run.json」](run-protocol.md#runjson)及「平台记录与合并」、当前 [settings.json](../settings.json) 配置值（直接传值或文件绝对路径）、需要解释时再读 [settings.md](settings.md)、`platforms/<平台>.md`，本机经验文件 `<数据目录>/learnings/<平台>.md`；
+- 平台名称，以及它要读的文件：[SKILL.md「关键红线」](../SKILL.md#关键红线)、[inquiry-rules.md](inquiry-rules.md)、[run-protocol.md「run.json」](run-protocol.md#runjson)及「平台记录与合并」、准备时通过 settings.mjs json 读取的有效配置合并值（直接传完整值，不让子代理用原始默认文件替代）、需要解释时再读 [settings.md](settings.md)、`platforms/<平台>.md`，本机经验文件 `<数据目录>/learnings/<平台>.md`；
 - 本任务每个型号的 `itemId`、型号、数量和单位、系统话术、该平台的全部货源直达链接（`run.json` 里 `items[].links` 的该平台部分，按顺序），以及报价截止时刻 `deadline`。子代理写报价时 `itemId` 必须用这里给的值；
 - 按 [run-protocol.md「本地防重复」](run-protocol.md#本地防重复)查到的该平台结果（哪些店沿用、哪些店不再问），沿用报价也写入平台文件，因为合并时会按平台覆盖；
 - 本次目录路径和要写的文件 `run-<平台>.json`；

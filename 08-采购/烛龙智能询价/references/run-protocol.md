@@ -102,10 +102,11 @@
 
 ## 数据目录
 
-询价参数读取技能根 settings.json，说明见 [settings.md](settings.md)。
+个人配置的继承与修改规则见 [settings.md](settings.md)。
 
 ```
 <数据目录>
+├── settings.json           个人配置覆盖，首次保存时创建
 ├── config.json             ERP 地址
 ├── records.jsonl           询价记录（每家店每个型号一行），用于防重复询价和统计
 ├── processed-tasks.jsonl   处理过的任务（提交过回价的、跳过的、需人工处理的），避免同一任务被重复跑

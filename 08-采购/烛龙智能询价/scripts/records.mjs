@@ -548,7 +548,7 @@ function stats(arg) {
 
 try {
     // version 仍可只复制 records.mjs 和 SKILL.md 运行，不读取或校验配置。
-    if (cmd !== 'version') SETTINGS = readJsonFile(join(SKILL_DIR, 'settings.json'));
+    if (cmd !== 'version') SETTINGS = (await import('./config.mjs')).readSettings().settings;
     if (cmd === 'version') {
         version();
     } else if (cmd === 'init') {

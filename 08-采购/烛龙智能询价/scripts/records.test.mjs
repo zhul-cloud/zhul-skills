@@ -70,6 +70,32 @@ test('version follows a copied script in a path with spaces and needs no setting
     assert.equal(readFileSync(personalPath, 'utf8'), '{invalid personal');
 });
 
+test('recent and watch read shared personal overrides without changing ERP config or creating runtime folders', (t) => {
+    const f = fixture(t);
+    const dataDir = join(f.home, '.zhul-trade-sourcing');
+    mkdirSync(dataDir);
+    const personalPath = join(dataDir, 'settings.json');
+    writeFileSync(personalPath, JSON.stringify({ dedupeDays: 0, subagents: { stallMinutes: 10 } }));
+    const erpPath = join(dataDir, 'config.json');
+    writeFileSync(erpPath, '{"erpUrl":"https://example.invalid"}\n');
+    writeFileSync(join(dataDir, 'records.jsonl'), JSON.stringify({ model: 'MODEL-A', time: ago(60), shop: '旧店' }) + '\n');
+    assert.deepEqual(f.json('recent', 'MODEL-A'), []);
+    assert.equal(f.json('recent', 'MODEL-A', '1').length, 1);
+    f.write('heartbeat-淘宝.jsonl', JSON.stringify({ at: ago(5), paused: false, doing: '挑店' }) + '\n');
+    f.write('heartbeat-1688.jsonl', JSON.stringify({ at: ago(5), paused: false, doing: '挑店' }) + '\n');
+    const out = f.json('watch', f.dir, '--once');
+    assert.equal(out.stallMinutes, 10);
+    assert.equal(out.result, 'running');
+    assert.equal(out.running.length, 2);
+    assert.equal(readFileSync(erpPath, 'utf8'), '{"erpUrl":"https://example.invalid"}\n');
+    assert.deepEqual(JSON.parse(readFileSync(personalPath, 'utf8')), { dedupeDays: 0, subagents: { stallMinutes: 10 } });
+    for (const name of ['runs', 'learnings', 'reports']) assert.equal(existsSync(join(dataDir, name)), false);
+    writeFileSync(personalPath, '{"dedupeDays":-1}');
+    const result = f.cli('recent', 'MODEL-A');
+    assert.notEqual(result.status, 0);
+    assert.ok(result.stderr.includes(personalPath));
+});
+
 for (const [name, value, message] of [
     ['missing', '', /必须有且只有一个 version/],
     ['invalid', 'version: latest\n', /version 非法/],
