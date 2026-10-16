@@ -133,6 +133,47 @@ test('manual/skip/finish preserve queue and submission history', (t) => {
     assert.match(f.json('next', 'IQ-TEST').skipped[0].reason, /已提交/);
 });
 
+test('same-round manual candidates exclude A, while a new round resumes A and preserves stop flags', (t) => {
+    const f = fixture(t);
+    const a = f.json('open-run', 'IQ-A').runDir;
+    writeFileSync(join(a, 'run.json'), JSON.stringify(run({ task: 'IQ-A' })));
+    f.ok('manual', 'IQ-A', '业务内容需人工核对');
+    f.ok('finish', join(a, 'run.json'));
+    const pending = ['IQ-A', 'IQ-B'];
+    const closedManual = new Set(['IQ-A']);
+    assert.equal(f.json('next', ...pending.filter((task) => !closedManual.has(task))).next, 'IQ-B');
+    const nextRound = f.json('next', ...pending);
+    assert.equal(nextRound.next, 'IQ-A');
+    assert.equal(nextRound.resumeRun, a);
+    assert.equal(nextRound.stopAfterTask, false);
+    writeFileSync(join(a, 'run.json'), JSON.stringify(run({ task: 'IQ-A', stopAfterTask: true })));
+    assert.equal(f.json('next', ...pending).stopAfterTask, true);
+    assert.equal(f.json('open-run', 'IQ-A').stopAfterTask, true);
+    assert.notEqual(f.cli('erp-items', join(a, 'run.json')).status, 0);
+    assert.equal(f.lines('processed-tasks.jsonl').some((r) => r.result === 'skipped'), false);
+});
+
+test('installed ecommerce helpers retain caller-owned page signatures and matching metadata', (t) => {
+    const f = fixture(t);
+    const helpersDir = join(f.root, 'isolated-helpers');
+    mkdirSync(helpersDir);
+    const install = spawnSync(process.execPath, [script, 'install-helpers'], {
+        env: { ...process.env, HOME: f.home, USERPROFILE: f.home, BROWSEROS_HELPERS_DIR: helpersDir }, encoding: 'utf8', timeout: 5000,
+    });
+    assert.equal(install.status, 0, install.stderr);
+    const result = JSON.parse(install.stdout);
+    assert.equal(result.installed.length, 6);
+    assert.deepEqual(result.kept, []);
+    const skillDir = resolve(script, '../..');
+    for (const helper of result.installed) {
+        const installed = readFileSync(join(helpersDir, `${helper}.md`), 'utf8');
+        assert.equal(installed, readFileSync(join(skillDir, 'helpers', `${helper}.md`), 'utf8'));
+        assert.match(installed, /^opensPage: false$/m);
+        assert.match(installed, /async \(browser, pageId, \w+\) =>/);
+        assert.match(installed, /const page = browser\.page\(pageId\)/);
+    }
+});
+
 test('finish keeps unsubmitted prices, freeShipping and original reuse time', (t) => {
     const time = ago(60);
     const f = fixture(t, run({ shops: [shop({ reusedFrom: time, quotes: [quote(11, { freeShipping: false })] }), shop({ shop: '默认包邮店', itemIds: [22], quotes: [quote(22)] })] }));
@@ -444,6 +485,52 @@ test('pending sends survive checkpoints and require confirmation before completi
     f.ok('check', f.dir, '淘宝');
     f.write('run-淘宝.json', part('淘宝', { shops: [shop({ pendingMessage: { ...pendingMessage, kind: 'correction', state: 'confirmed', confirmedAt: now() } })] }));
     f.ok('check', f.dir, '淘宝');
+});
+
+test('confirmed replies require sending evidence and retain replyAt after later intents and resume', (t) => {
+    const f = fixture(t);
+    const dir = f.json('open-run', 'IQ-REPLY').runDir;
+    const value = run({ task: 'IQ-REPLY', platforms: ['淘宝'], platformStates: {}, deadline: ago(-60) });
+    writeFileSync(join(dir, 'run.json'), JSON.stringify(value));
+    const replyAt = ago(15);
+    const followUpAt = ago(20);
+    const confirmedAt = ago(1);
+    const record = shop({ sentAt: ago(30), followUps: 1, followUpAt, answeredTopics: ['数量'],
+        pendingMessage: { kind: 'reply', text: '需要1台', preparedAt: ago(16), state: 'confirmed', confirmedAt } });
+    const path = join(dir, 'run-淘宝.json');
+    writeFileSync(path, JSON.stringify(part('淘宝', { status: 'interrupted', stages: {}, interruption: { reason: '会话断开' }, shops: [record] })));
+    const before = readFileSync(path, 'utf8');
+    assert.notEqual(f.cli('check', dir, '淘宝', '--partial').status, 0);
+    const blocked = f.cli('open-run', 'IQ-REPLY');
+    assert.notEqual(blocked.status, 0);
+    assert.ok(blocked.stderr.includes(path));
+    assert.match(blocked.stderr, /replyAt/);
+    assert.equal(readFileSync(path, 'utf8'), before);
+    record.replyAt = replyAt; // 原聊天证据中的发送时刻，不是本次核验时刻。
+    for (const invalid of ['bad-time', 123]) {
+        writeFileSync(path, JSON.stringify(part('淘宝', { shops: [{ ...record, replyAt: invalid }] })));
+        assert.notEqual(f.cli('check', dir, '淘宝', '--partial').status, 0);
+    }
+    writeFileSync(path, JSON.stringify(part('淘宝', { shops: [{ ...record, answeredTopics: [] }] })));
+    assert.notEqual(f.cli('check', dir, '淘宝').status, 0);
+    writeFileSync(path, JSON.stringify(part('淘宝', { shops: [record] })));
+    f.ok('check', dir, '淘宝');
+    assert.equal(f.json('open-run', 'IQ-REPLY').runDir, dir);
+    for (const kind of ['correction', 'thankYou']) {
+        record.pendingMessage = { kind, text: kind === 'correction' ? '不好意思发错了' : '谢谢', preparedAt: ago(1), state: 'confirmed', confirmedAt: now() };
+        writeFileSync(path, JSON.stringify(part('淘宝', { shops: [record] })));
+        f.ok('merge', dir);
+        const checkpoint = JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8'));
+        assert.equal(checkpoint.shops[0].replyAt, replyAt);
+        assert.equal(checkpoint.shops[0].followUps, 1);
+        assert.equal(checkpoint.shops[0].followUpAt, followUpAt);
+        const stored = readFileSync(join(dir, 'run.json'), 'utf8');
+        f.json('open-run', 'IQ-REPLY');
+        assert.equal(readFileSync(join(dir, 'run.json'), 'utf8'), stored);
+    }
+    f.ok('finish', join(dir, 'run.json'));
+    assert.equal(f.lines('records.jsonl')[0].replyAt, replyAt);
+    assert.equal(f.lines('records.jsonl')[0].followUps, 1);
 });
 
 test('finish archives a snapshot once, excludes unsent candidates and allows later revisions', (t) => {

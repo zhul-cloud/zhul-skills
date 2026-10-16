@@ -333,7 +333,7 @@ function next(taskCodes) {
 
 /**
  * 把任务记为跳过（skipped：询盘已取消、已在别处回过价）或需人工处理（manual：提交失败、AI 解决不了），
- * 连续处理时 next 不再选中它
+ * skipped 不再由 next 选中；manual 有真实未完 run 时仍可恢复，同轮已收尾任务由主代理从候选中排除
  */
 function mark(result, taskCode, reason) {
     mkdirSync(DATA_DIR, { recursive: true });
@@ -360,7 +360,7 @@ function validateRun(run) {
         if (!String(s.shop ?? '').trim()) problems.push(`${at}：缺少店铺名称`);
         if (!String(s.platform ?? '').trim()) problems.push(`${at}：缺少 platform（平台）`);
         if (!STATUSES.includes(s.status)) problems.push(`${at}：status 只能是 ${STATUSES.join(' / ')}`);
-        for (const key of ['sentAt', 'followUpAt']) {
+        for (const key of ['sentAt', 'followUpAt', 'replyAt']) {
             if (s[key] != null && s[key] !== '' && !validTime(s[key])) problems.push(`${at}：${key} 应为有效时间`);
         }
         if (s.followUps != null && (!Number.isInteger(s.followUps) || s.followUps < 0)) problems.push(`${at}：followUps 应为非负整数`);
@@ -371,6 +371,7 @@ function validateRun(run) {
             if (m.state === 'confirmed' && !validTime(m.confirmedAt)) problems.push(`${at}：已确认 pendingMessage 缺少 confirmedAt`);
             if (m.state === 'confirmed' && m.kind === 'initial' && !validTime(s.sentAt)) problems.push(`${at}：首条发送已确认但未保存 sentAt`);
             if (m.state === 'confirmed' && m.kind === 'followUp' && (!validTime(s.followUpAt) || !(s.followUps > 0))) problems.push(`${at}：追问已确认但未保存 followUpAt/followUps`);
+            if (m.state === 'confirmed' && m.kind === 'reply' && (!validTime(s.replyAt) || !Array.isArray(s.answeredTopics) || !s.answeredTopics.length)) problems.push(`${at}：答复已确认但未保存 replyAt/answeredTopics`);
         }
         for (const id of s.itemIds ?? []) {
             if (!ids.has(String(id))) problems.push(`${at}：itemIds 的 ${id} 不在本任务里`);
@@ -635,7 +636,7 @@ function finish(runPath) {
                 condition: q.condition ?? '', leadTime: q.leadTime ?? '', freeShipping: q.freeShipping !== false, sentAt: s.sentAt ?? '',
                 note: q.note ?? '',
                 endReason: s.endReason ?? '', stopQuestion: s.stopQuestion ?? null,
-                followUps: s.followUps ?? 0, followUpAt: s.followUpAt ?? null, answeredTopics: s.answeredTopics ?? [],
+                followUps: s.followUps ?? 0, followUpAt: s.followUpAt ?? null, replyAt: s.replyAt ?? null, answeredTopics: s.answeredTopics ?? [],
                 thankYou: s.thankYou ?? null, pendingMessage: s.pendingMessage ?? null,
             }));
         }

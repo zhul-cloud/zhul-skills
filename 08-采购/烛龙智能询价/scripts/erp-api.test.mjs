@@ -158,6 +158,17 @@ await t('核对发现提交后仍有草稿', { detail: baseDetail([...live, q({ 
   (o) => !o.ok && o.mismatches.some((m) => m.problem === '提交后仍有草稿'));
 await t('不需审核时待审核不算', { detail: baseDetail(live, [], false) }, { op: 'verify', taskId: 1, submitted: true, items: fresh },
   (o) => !o.ok && o.mismatches[0].problem === '没有找到这条报价');
+await t('不需审核部分提交仍待处理且已填数含跳过草稿', { detail: baseDetail([{ ...live[0], status: 2 }], [q({ status: 1 })], false), filled: 2 },
+  { op: 'verify', taskId: 1, submitted: true, items: fresh, skipItemIds: [2] },
+  (o) => o.ok && o.mismatches.length === 0 && o.inDoneList === false && o.filledCount === 2 && o.itemCount === 2 && JSON.stringify(o.verifiedItemIds) === '[1]');
+const lockedObservation = baseDetail([{ ...live[0], status: 2 }], [q({ status: 2 })], false);
+lockedObservation.items[1].locked = true;
+await t('不需审核核对锁定型号外的写入不以列表已填数判失败', { detail: lockedObservation, filled: 2 },
+  { op: 'verify', taskId: 1, submitted: true, items: fresh },
+  (o) => o.ok && o.inDoneList === false && o.filledCount === 2 && JSON.stringify(o.verifiedItemIds) === '[1]');
+await t('已回价且已填满不能掩盖报价核对差异', { detail: baseDetail([{ ...live[0], status: 2, unitPrice: 121 }], [], false), done: true, filled: 2 },
+  { op: 'verify', taskId: 1, submitted: true, items: fresh },
+  (o) => !o.ok && o.inDoneList === true && o.filledCount === 2 && o.mismatches.some((m) => m.problem.includes('单价')));
 // 13. 包邮：没写按包邮，店家说不包邮时提交 false；核对包邮是否一致
 const noFree = [{ itemId: 1, quotes: [{ ...fresh[0].quotes[0], freeShipping: false }] }];
 await t('包邮默认 true，不包邮传 false', { detail: baseDetail() }, { op: 'save', taskId: 1, submit: false, items: [{ itemId: 1, quotes: [fresh[0].quotes[0], { ...noFree[0].quotes[0], shopName: '店C' }] }] },
