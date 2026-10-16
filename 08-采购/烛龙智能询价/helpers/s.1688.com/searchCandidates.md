@@ -5,15 +5,15 @@ lastVerified: 1792067650292
 agent: "claude"
 candidate: false
 opensPage: true
-description: "Saved helper for s.1688.com"
+description: "烛龙智能询价：Saved helper for s.1688.com"
 inputs: {}
 ---
 
-Saved helper for s.1688.com
+烛龙智能询价：Saved helper for s.1688.com
 
 Call it:
 
-`helpers["searchCandidates"](browser)`
+`helpers["searchCandidates"](browser, pageId, model)`
 
 ```js
 async (browser, pageId, model) => {

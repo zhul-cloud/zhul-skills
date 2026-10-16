@@ -26,6 +26,8 @@ function makeEnv(state) {
     if (url === '/api/v1/auth/refresh') return state.refreshOk ? reply(200, { code: 0, data: { accessToken: 'T2' } }) : reply(401, { code: 401 });
     const auth = (opts.headers || {}).Authorization;
     if (state.expireT1 && auth === 'Bearer T1') return reply(401, { code: 401, message: 'expired' });
+    if (state.networkError) throw new Error('mock network unavailable');
+    if (state.httpReply) return { status: state.httpReply.http, text: async () => state.httpReply.text };
     if (state.http404 && url.startsWith('/api/v1/inquiry/my-tasks/')) return reply(404, {});
     if (url.startsWith('/api/v1/system/dict-items')) {
       const t = decodeURIComponent(url.split('dictType=')[1]);
@@ -128,10 +130,90 @@ await t('核对发现提交后仍有草稿', { detail: baseDetail([...live, q({ 
   (o) => !o.ok && o.mismatches.some((m) => m.problem === '提交后仍有草稿'));
 await t('不需审核时待审核不算', { detail: baseDetail(live, [], false) }, { op: 'verify', taskId: 1, submitted: true, items: fresh },
   (o) => !o.ok && o.mismatches[0].problem === '没有找到这条报价');
-// 13. 页面通信异常不抛出
+// 13. 包邮：没写按包邮，店家说不包邮时提交 false；核对包邮是否一致
+const noFree = [{ itemId: 1, quotes: [{ ...fresh[0].quotes[0], freeShipping: false }] }];
+await t('包邮默认 true，不包邮传 false', { detail: baseDetail() }, { op: 'save', taskId: 1, submit: false, items: [{ itemId: 1, quotes: [fresh[0].quotes[0], { ...noFree[0].quotes[0], shopName: '店C' }] }] },
+  (o, s) => o.ok && s.lastPut.items[0].quotes[0].freeShipping === true && s.lastPut.items[0].quotes[1].freeShipping === false);
+await t('核对发现包邮不一致', { detail: baseDetail(live) }, { op: 'verify', taskId: 1, submitted: true, items: noFree },
+  (o) => !o.ok && o.mismatches[0].problem.includes('包邮'));
+await t('核对不包邮一致', { detail: baseDetail([{ ...live[0], freeShipping: false }]) }, { op: 'verify', taskId: 1, submitted: true, items: noFree },
+  (o) => o.ok && o.mismatches.length === 0);
+// 14. 页面通信异常不抛出
 const broken = { page: () => ({ evaluate: async () => { throw new Error('No tab with given id'); } }) };
 let brokenOut; try { brokenOut = await erpApi(broken, 1, { op: 'ping' }); } catch (e) { brokenOut = { thrown: String(e) }; }
 results.push({ name: '标签页关了不抛出', pass: brokenOut.error === 'ERP_HTTP', ...(brokenOut.error === 'ERP_HTTP' ? {} : { out: JSON.stringify(brokenOut) }) });
+
+// 15. 独立复核：保留附件、按 itemId 分别更新同名型号，以及核对输入和无货边界
+await t('同店更新保留原有附件和不包邮', { detail: baseDetail([q({ shopName: '店B', freeShipping: false, attachments: [{ id: 101 }] })]) },
+  { op: 'save', taskId: 1, submit: false, items: noFree },
+  (o, s) => o.ok && s.lastPut.items[0].quotes[0].freeShipping === false && JSON.stringify(s.lastPut.items[0].quotes[0].attachmentIds) === '[101]');
+await t('其他店原报价附件及供应商信息保留', { detail: baseDetail([q({ channel: 4, shopName: '原供应商', supplierId: 88, freeShipping: false, recommended: true, attachments: [{ id: 102 }, { id: 103 }] })], [], false) },
+  { op: 'save', taskId: 1, submit: true, items: fresh },
+  (o, s) => { const old = s.lastPut.items[0].quotes[0]; return o.ok && old.supplierId === 88 && old.recommended === true && old.freeShipping === false && JSON.stringify(old.attachmentIds) === '[102,103]'; });
+await t('同店附件继承草稿优先且不混入已通过', { detail: baseDetail([q({ shopName: '店B', status: 3, attachments: [{ id: 104 }] }), q({ shopName: '店B', status: 1, attachments: [{ id: 105 }] }), q({ shopName: '店B', status: 2, attachments: [{ id: 106 }] })]) },
+  { op: 'save', taskId: 1, submit: true, items: fresh },
+  (o, s) => o.ok && JSON.stringify(s.lastPut.items[0].quotes[0].attachmentIds) === '[105]');
+await t('存草稿不移走原已提交附件', { detail: baseDetail([q({ shopName: '店B', status: 2, attachments: [{ id: 107 }] })], [], false) },
+  { op: 'save', taskId: 1, submit: false, items: fresh },
+  (o, s) => o.ok && s.lastPut.items[0].quotes[0].attachmentIds.length === 0);
+await t('不需审核提交继承被替换的已提交附件', { detail: baseDetail([q({ shopName: '店B', status: 2, attachments: [{ id: 108 }] })], [], false) },
+  { op: 'save', taskId: 1, submit: true, items: fresh },
+  (o, s) => o.ok && JSON.stringify(s.lastPut.items[0].quotes[0].attachmentIds) === '[108]');
+await t('大请求分段保留每条包邮值', { detail: baseDetail() },
+  { op: 'save', taskId: 1, submit: false, items: [{ itemId: 1, quotes: Array.from({ length: 16 }, (_, i) => ({ ...fresh[0].quotes[0], shopName: `店${i}`, note: '报价备注'.repeat(75), freeShipping: i % 2 === 0 })) }] },
+  (o, s) => o.ok && Buffer.byteLength(JSON.stringify(s.lastPut)) > 4000 && s.lastPut.items[0].quotes.length === 16 && s.lastPut.items[0].quotes.every((q, i) => q.freeShipping === (i % 2 === 0)));
+const sameModel = baseDetail(); sameModel.items[1].model = sameModel.items[0].model;
+await t('同名多型号按 itemId 分别填报', { detail: sameModel },
+  { op: 'save', taskId: 1, submit: false, items: [{ itemId: 2, quotes: [{ ...fresh[0].quotes[0], unitPrice: 222, freeShipping: false }] }, ...fresh] },
+  (o, s) => o.ok && s.lastPut.items[0].itemId === 2 && s.lastPut.items[0].quotes[0].unitPrice === 222 && s.lastPut.items[1].itemId === 1 && s.lastPut.items[1].quotes[0].unitPrice === 120.46);
+await t('本次无货保留原有正常报价', { detail: baseDetail([q({ status: 1 })]) },
+  { op: 'save', taskId: 1, submit: true, items: [{ itemId: 1, noStock: true, quotes: [] }] },
+  (o, s) => o.ok && !s.lastPut.items[0].noStock && s.lastPut.items[0].quotes[0].shopName === '店A');
+await t('核对无货允许保留原有正常报价', { detail: baseDetail([q({ status: 3 })]) },
+  { op: 'verify', taskId: 1, submitted: true, items: [{ itemId: 1, noStock: true, quotes: [] }] },
+  (o) => o.ok);
+await t('核对真实无货通过', { detail: baseDetail([q({ status: 3, noStock: true, unitPrice: undefined })]) },
+  { op: 'verify', taskId: 1, submitted: true, items: [{ itemId: 1, noStock: true, quotes: [] }] }, (o) => o.ok);
+await t('核对非法税率不能假成功', { detail: baseDetail([{ ...live[0], taxRate: 1 }]) },
+  { op: 'verify', taskId: 1, submitted: true, items: [{ itemId: 1, quotes: [{ ...fresh[0].quotes[0], taxRate: 1 }] }] },
+  (o) => o.error === 'SKILL_INPUT' && o.problems.some((p) => p.path.endsWith('.taxRate')));
+await t('核对按 itemId 不借用其他型号报价', { detail: baseDetail(live) },
+  { op: 'verify', taskId: 1, submitted: true, items: [{ itemId: 2, quotes: fresh[0].quotes }] },
+  (o) => !o.ok && o.mismatches[0].itemId === 2 && o.mismatches[0].problem === '没有找到这条报价');
+// 16. HTTP、JSON 和契约边界：全用 mock，无真实接口
+await t('网络异常 → ERP_HTTP', { networkError: true }, { op: 'ping' }, (o) => o.error === 'ERP_HTTP');
+await t('HTTP 500 即使 JSON 成功也失败', { httpReply: { http: 500, text: '{"code":0,"data":[]}' } }, { op: 'ping' }, (o) => o.error === 'ERP_HTTP');
+await t('非 JSON → ERP_HTTP', { httpReply: { http: 200, text: '<html>unavailable</html>' } }, { op: 'ping' }, (o) => o.error === 'ERP_HTTP');
+await t('HTTP 405 → ERP_CONTRACT', { httpReply: { http: 405, text: '{}' } }, { op: 'ping' }, (o) => o.error === 'ERP_CONTRACT');
+await t('成功 JSON 外层缺 code → ERP_CONTRACT', { httpReply: { http: 200, text: '{"data":[]}' } }, { op: 'ping' }, (o) => o.error === 'ERP_CONTRACT');
+await t('HTTP 400 业务错误 → ERP_BIZ', { httpReply: { http: 400, text: '{"code":400,"message":"mock invalid"}' } }, { op: 'ping' }, (o) => o.error === 'ERP_BIZ');
+
+// 17. 故障无价型号由 records 显式排除，不能被自动带上的旧草稿重新提交
+for (const noStock of [false, true]) {
+  await t(`skipItemIds 保留故障型号旧${noStock ? '无货' : '正常'}草稿`, { detail: baseDetail([], [q({ status: 1, noStock })]) },
+    { op: 'save', taskId: 1, submit: true, items: fresh, skipItemIds: [2] },
+    (o, s) => o.ok && s.lastPut.items.length === 1 && s.lastPut.items[0].itemId === 1);
+}
+for (const op of ['save', 'verify']) {
+  for (const [label, skipItemIds] of [['未知型号', [99]], ['字符串ID', ['2']], ['null', null], ['重复ID', [2, 2]], ['与items重叠', [1]], ['非数组', 2]]) {
+    await t(`${op} 拒绝skipItemIds ${label}`, { detail: baseDetail(live) },
+      { op, taskId: 1, submit: true, submitted: true, items: fresh, skipItemIds },
+      (o, s) => o.error === 'SKILL_INPUT' && o.problems.some((p) => p.path.startsWith('skipItemIds')) && !s.lastPut);
+  }
+  for (const [label, unitPrice] of [['null', null], ['空字符串', ''], ['空白', ' '], ['布尔', false], ['数组', []], ['NaN', NaN], ['Infinity', Infinity], ['含单位文字', '100元'], ['四舍五入前负数', -0.001]]) {
+    await t(`${op} 拒绝非法单价 ${label}`, { detail: baseDetail(live) },
+      { op, taskId: 1, submit: false, submitted: true, items: [{ itemId: 1, quotes: [{ ...fresh[0].quotes[0], unitPrice }] }] },
+      (o, s) => o.error === 'SKILL_INPUT' && o.problems.some((p) => p.path.endsWith('.unitPrice')) && !s.lastPut);
+  }
+}
+await t('合法数字字符串及明确零价仍可保存', { detail: baseDetail() },
+  { op: 'save', taskId: 1, submit: false, items: [{ itemId: 1, quotes: [{ ...fresh[0].quotes[0], unitPrice: '120.456' }, { ...fresh[0].quotes[0], shopName: '零价店', unitPrice: 0 }] }] },
+  (o, s) => o.ok && s.lastPut.items[0].quotes[0].unitPrice === 120.46 && s.lastPut.items[0].quotes[1].unitPrice === 0);
+await t('verify允许排除型号保留未提交草稿', { detail: baseDetail(live, [q({ status: 1, noStock: true })]) },
+  { op: 'verify', taskId: 1, submitted: true, items: fresh, skipItemIds: [2] }, (o) => o.ok);
+await t('全空items且排除旧草稿不发PUT', { detail: baseDetail([], [q({ status: 1, noStock: true })]) },
+  { op: 'save', taskId: 1, submit: true, items: [], skipItemIds: [2] },
+  (o, s) => o.error === 'SKILL_INPUT' && !s.lastPut);
 
 for (const r of results) console.log(`${r.pass ? 'PASS' : 'FAIL'}  ${r.name}${r.pass ? '' : '\n      ' + r.out + '\n      put=' + r.put}`);
 const passed = results.filter((r) => r.pass).length;

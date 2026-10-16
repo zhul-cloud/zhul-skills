@@ -5,19 +5,19 @@ lastVerified: 1792045971240
 agent: "claude"
 candidate: false
 opensPage: true
-description: "Saved helper for market.m.taobao.com"
+description: "烛龙智能询价：Saved helper for market.m.taobao.com"
 inputs: {}
 ---
 
-Saved helper for market.m.taobao.com
+烛龙智能询价：Saved helper for market.m.taobao.com
 
 Call it:
 
-`helpers["imOpenAndRead"](browser)`
+`helpers["imOpenAndRead"](browser, pageId, key)`
 
 ```js
 async (browser, pageId, key) => {
-  // 点开名称包含 key 的会话，用 .conversation-header 核对当前会话，返回本会话从我方询价开始的消息全文
+  // 点开名称包含 key 的会话，用 .conversation-header 核对当前会话，启发式抽取本会话末尾最多 1500 字符，可能缺旧消息
   const page = browser.page(pageId);
   await page.evaluate((key) => { const d = document.querySelector('iframe').contentDocument; const it = [...d.querySelectorAll('.conversation-item')].find(e => (e.querySelector('.name')?.textContent || '').includes(key)); it && it.click(); }, key);
   await page.waitForTime(2200);

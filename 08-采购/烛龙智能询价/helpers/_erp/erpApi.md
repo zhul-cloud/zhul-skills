@@ -5,11 +5,11 @@ lastVerified: 1792166400000
 agent: "claude"
 candidate: false
 opensPage: false
-description: "烛龙AI询价：在 ERP 标签页里调用「我的询价」接口（取任务、存草稿、提交回价、核对），每次校验接口结构"
+description: "烛龙智能询价：在 ERP 标签页里调用「我的询价」接口（取任务、存草稿、提交回价、核对），每次校验接口结构"
 inputs: {}
 ---
 
-烛龙AI询价：在 ERP 标签页里调用「我的询价」接口。由 `records.mjs install-helpers` 按 `config.json` 里的 ERP 地址装进对应域名，`host` 由安装时填入。
+烛龙智能询价：在 ERP 标签页里调用「我的询价」接口。由 `records.mjs install-helpers` 按 `config.json` 里的 ERP 地址装进对应域名，`host` 由安装时填入。
 
 Call it:
 
@@ -17,12 +17,13 @@ Call it:
 
 - `pageId`：任意一个已登录 ERP 的标签页（同一个 ERP 地址）。脚本只在页面里取令牌、发请求，不点页面，也不返回令牌。
 - `op`：`ping`（检查登录）、`list`（`done`: true 已回价 / false 待处理）、`task`（`taskId`；读任务，返回可直接写进 run.json 的内容）、`save`（`taskId`、`items`、`submit`: false 存草稿 / true 提交回价）、`verify`（`taskId`、`items`、`submitted`: 是否已提交；逐条核对）。`items` 由 `records.mjs erp-items` 生成。
+- `save` / `verify` 同时传 `erp-items` 输出的 `skipItemIds`（不传按空数组）：因询价故障且无有效报价而排除的型号 ID，必须属于本任务、不重复且不与 `items` 重叠。提交时这些型号的原草稿保留原状，其余型号的草稿照常一并提交；核对只检查 `items`。
 - 返回 `{ ok: true, ... }`；出错返回 `{ ok: false, error, ... }`：
-  - `ERP_CONTRACT`：接口结构和下面 CONTRACT 记录的不一致（缺字段、类型变了、取值不认识、接口不存在）。**立即停止任务**，提示「ERP 接口已修改，烛龙AI询价没有同步，请更新技能」，把 `problems` 写进实跑报告。
+  - `ERP_CONTRACT`：接口结构和下面 CONTRACT 记录的不一致（缺字段、类型变了、取值不认识、接口不存在）。**立即停止任务**，提示「ERP 接口已修改，烛龙智能询价没有同步，请更新技能」，把 `problems` 写进实跑报告。
   - `ERP_LOGIN`：没登录或登录已过期且无法续期，请用户在 BrowserOS neo 里重新登录 ERP（建议勾选「记住我」）。
-  - `ERP_BIZ`：ERP 拒绝了这次请求（如「货期不在可选值内」），按 `message` 改正后重试。
-  - `ERP_HTTP`：网络或服务器错误、ERP 标签页不可用，记下后停下汇报。
-  - `SKILL_INPUT`：技能传进来的内容不对（如型号不在任务里、货况文字不认识），没有发给 ERP；改正 run.json 后重试。
+  - `ERP_BIZ`：ERP 拒绝了这次请求（如「货期不在可选值内」），仅正式提交前草稿可按 message 改正；提交已执行或结果未知只读核对并转人工，不重复 submit。
+  - `ERP_HTTP`：网络或服务器错误、ERP 标签页不可用，最多重试一次；提交已执行或未知时仅重试只读核对；仍失败按 [ERP 重试边界](../../references/erp-api.md#erp-错误与重试边界)转人工。
+  - `SKILL_INPUT`：技能传进来的内容不对（如型号不在任务里、货况文字不认识），本次输入未进入业务 PUT；仅正式提交前草稿可改正重试，此前提交已执行或未知时只读核对，不重复 submit。
 - ERP 新增的字段不算错误，在返回的 `extraFields` 里列出，写进实跑报告即可。
 
 ```js
@@ -120,7 +121,7 @@ async (browser, pageId, req) => {
   };
 
   const contractError = (endpoint, problems) => ({ ok: false, error: 'ERP_CONTRACT', endpoint, problems,
-    contractCheckedAt: CONTRACT.checkedAt, hint: 'ERP 接口已修改，烛龙AI询价没有同步，请更新技能' });
+    contractCheckedAt: CONTRACT.checkedAt, hint: 'ERP 接口已修改，烛龙智能询价没有同步，请更新技能' });
 
   // ----- 在 ERP 页面里发请求：令牌取自页面的登录状态，过期时按前端同样的方式续期；令牌不返回 -----
   // 页面通信出错（标签页关了、页面跳走等）时不抛出，按 ERP_HTTP 返回
@@ -238,7 +239,6 @@ async (browser, pageId, req) => {
 
   const extras = () => [...extraFields];
   const op = req && req.op;
-
   if (op === 'ping') {
     const r = await call('list', { query: { done: false } });
     return r.fail || { ok: true, pending: r.data.length, extraFields: extras() };
@@ -283,14 +283,18 @@ async (browser, pageId, req) => {
     const leadTime = q.leadTime ? dicts.inquiry_lead_time[q.leadTime] : 0;
     if (leadTime === undefined) problems.push({ path: `${where}.leadTime`, expected: Object.keys(dicts.inquiry_lead_time).join('/'), actual: q.leadTime });
     // ERP 单价存两位小数
-    const unitPrice = Math.round(Number(q.unitPrice) * 100) / 100;
-    if (!Number.isFinite(unitPrice) || unitPrice < 0) problems.push({ path: `${where}.unitPrice`, expected: '非负数字', actual: q.unitPrice });
+    const price = Number(q.unitPrice);
+    const unitPrice = Math.round(price * 100) / 100;
+    if (!(typeof q.unitPrice === 'number' || (typeof q.unitPrice === 'string' && q.unitPrice.trim()))
+      || !Number.isFinite(price) || price < 0 || !Number.isFinite(unitPrice)) {
+      problems.push({ path: `${where}.unitPrice`, expected: '非负有限数字或非空数字字符串', actual: q.unitPrice });
+    }
     const taxIncluded = !!q.taxIncluded;
     const taxRate = taxIncluded ? Number(q.taxRate) : undefined;
     if (taxIncluded && !Object.values(dicts.inquiry_tax_rate).includes(taxRate)) problems.push({ path: `${where}.taxRate`, expected: Object.values(dicts.inquiry_tax_rate).join('/'), actual: q.taxRate });
     // ERP 店铺名称最长 128 字、备注最长 300 字
     const entry = { channel, shopName: String(q.shopName || '').trim().slice(0, 128), unitPrice, taxIncluded, itemCondition, leadTime,
-      note: String(q.note || '').slice(0, 300), attachmentIds: [] };
+      note: String(q.note || '').slice(0, 300), freeShipping: q.freeShipping !== false, attachmentIds: [] };
     if (taxIncluded) entry.taxRate = taxRate;
     return entry;
   };
@@ -318,6 +322,19 @@ async (browser, pageId, req) => {
     }
     return [...byKey.values()];
   };
+  const skippedItems = (byId, problems) => {
+    const ids = req.skipItemIds === undefined ? [] : req.skipItemIds;
+    check(ids, ['number'], 'skipItemIds', problems);
+    const skipped = new Set();
+    if (!Array.isArray(ids)) return skipped;
+    for (const [n, id] of ids.entries()) {
+      if (!byId.has(id)) problems.push({ path: `skipItemIds[${n}]`, expected: '本任务的型号ID', actual: id });
+      if (skipped.has(id)) problems.push({ path: `skipItemIds[${n}]`, expected: '不重复的型号ID', actual: id });
+      if ((req.items || []).some((it) => it.itemId === id)) problems.push({ path: `skipItemIds[${n}]`, expected: '不能同时出现在items中', actual: id });
+      skipped.add(id);
+    }
+    return skipped;
+  };
 
   if (op === 'save') {
     const d = await loadDicts();
@@ -327,6 +344,7 @@ async (browser, pageId, req) => {
     const review = !!r.data.reviewRequired;
     const byId = new Map(r.data.items.map((i) => [i.id, i]));
     const problems = [];
+    const skipped = skippedItems(byId, problems);
     const body = { items: [], submit: !!req.submit };
     const touched = new Set();
     for (const [n, it] of (req.items || []).entries()) {
@@ -337,16 +355,22 @@ async (browser, pageId, req) => {
       const fresh = (it.quotes || []).map((q, j) => toEntry(q, d.data, `items[${n}].quotes[${j}]`, problems));
       const freshKeys = new Set(fresh.map((e) => keyOf(e.channel, e.shopName)));
       // 本人原有的报价行照带，同一平台同一店铺的以本次为准
-      const keep = keptQuotes(item, keepStatuses(body.submit, review), freshKeys, review);
+      const existing = keptQuotes(item, keepStatuses(body.submit, review), new Set(), review);
+      // 本次报价不上传附件；更新同店报价时继承被替换版本的附件（同店仍以草稿优先）
+      for (const e of fresh) {
+        const previous = existing.find((q) => keyOf(q.channel, q.shopName) === keyOf(e.channel, e.shopName));
+        if (previous) e.attachmentIds = previous.attachmentIds;
+      }
+      const keep = existing.filter((q) => !freshKeys.has(keyOf(q.channel, q.shopName)));
       const quotes = [...keep, ...fresh];
       if (quotes.length) body.items.push({ itemId: item.id, quotes });
       else if (it.noStock) body.items.push({ itemId: item.id, noStock: true, noStockNote: String(it.noStockNote || '').slice(0, 300), quotes: [] });
     }
     if (problems.length) return { ok: false, error: 'SKILL_INPUT', problems, hint: '技能整理的报价取值不对，改正 run.json 后重试' };
-    // 提交时，本人在其他型号上的草稿也一并提交（与页面「提交回价」一致）
+    // 提交时，本人在其他型号上的草稿也一并提交；故障无价而显式排除的型号保留原状
     if (body.submit) {
       for (const item of r.data.items) {
-        if (touched.has(item.id) || item.locked) continue;
+        if (touched.has(item.id) || skipped.has(item.id) || item.locked) continue;
         const drafts = item.quotes.filter((q) => q.status === 1);
         if (!drafts.length) continue;
         const noStock = drafts.find((q) => q.noStock);
@@ -372,6 +396,9 @@ async (browser, pageId, req) => {
     const submitted = !!req.submitted;
     const okStatus = submitted ? (review ? [3, 2] : [2]) : [1];
     const byId = new Map(r.data.items.map((i) => [i.id, i]));
+    const problems = [];
+    skippedItems(byId, problems);
+    if (problems.length) return { ok: false, error: 'SKILL_INPUT', problems };
     const mismatches = [];
     const same = (a, b) => Math.abs(Number(a) - Number(b)) < 0.005;
     for (const [n, it] of (req.items || []).entries()) {
@@ -386,6 +413,7 @@ async (browser, pageId, req) => {
       for (const [j, q] of (it.quotes || []).entries()) {
         const p = [];
         const e = toEntry(q, d.data, `items[${n}].quotes[${j}]`, p);
+        if (p.length) return { ok: false, error: 'SKILL_INPUT', problems: p, hint: '技能整理的报价取值不对，改正 run.json 后重试' };
         const hit = live.find((x) => x.channel === e.channel && String(x.shopName || '').trim() === e.shopName);
         if (!hit) { mismatches.push({ itemId: it.itemId, model: item.model, shop: e.shopName, problem: '没有找到这条报价' }); continue; }
         const diff = [];
@@ -395,6 +423,7 @@ async (browser, pageId, req) => {
         if ((hit.itemCondition ?? 0) !== e.itemCondition) diff.push(`货况码 ${hit.itemCondition} ≠ ${e.itemCondition}`);
         if ((hit.leadTime ?? 0) !== e.leadTime) diff.push(`货期码 ${hit.leadTime} ≠ ${e.leadTime}`);
         if (String(hit.note ?? '').trim() !== e.note.trim()) diff.push('备注不一致');
+        if ((hit.freeShipping !== false) !== e.freeShipping) diff.push(`包邮 ${hit.freeShipping !== false} ≠ ${e.freeShipping}`);
         if (diff.length) mismatches.push({ itemId: it.itemId, model: item.model, shop: e.shopName, problem: diff.join('；') });
       }
     }
