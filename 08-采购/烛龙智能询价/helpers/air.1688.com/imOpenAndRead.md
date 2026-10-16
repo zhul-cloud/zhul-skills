@@ -5,15 +5,15 @@ lastVerified: 1792067650292
 agent: "claude"
 candidate: false
 opensPage: true
-description: "Saved helper for air.1688.com"
+description: "烛龙智能询价：Saved helper for air.1688.com"
 inputs: {}
 ---
 
-Saved helper for air.1688.com
+烛龙智能询价：Saved helper for air.1688.com
 
 Call it:
 
-`helpers["imOpenAndRead"](browser)`
+`helpers["imOpenAndRead"](browser, pageId, key)`
 
 ```js
 async (browser, pageId, key) => {

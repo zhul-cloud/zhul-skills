@@ -5,15 +5,15 @@ lastVerified: 1792045942592
 agent: "claude"
 candidate: false
 opensPage: true
-description: "Saved helper for s.taobao.com"
+description: "烛龙智能询价：Saved helper for s.taobao.com"
 inputs: {}
 ---
 
-Saved helper for s.taobao.com
+烛龙智能询价：Saved helper for s.taobao.com
 
 Call it:
 
-`helpers["searchCandidates"](browser)`
+`helpers["searchCandidates"](browser, pageId, model)`
 
 ```js
 async (browser, pageId, model) => {
