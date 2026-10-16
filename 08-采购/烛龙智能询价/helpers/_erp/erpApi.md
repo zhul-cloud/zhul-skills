@@ -21,7 +21,7 @@ Call it:
 - `save` 的正常返回都含 `writeAttempted`：进入业务 PUT 调用前的失败为 `false`，进入调用后的成功或错误为 `true`（不表示写入成功）。只有明确返回 `false` 才能按原错误重试边界修复后重试；抛出、中断或没有回包仍属结果未知，只读核对，不推断为 `false`。
 - GET 遇 HTTP 401 或响应 `code:401` 时最多续期并重读一次；PUT 遇任一种授权失败均返回 `ERP_LOGIN`、`writeAttempted:true`，不自动续期重发。登录恢复后按原 payload 只读核对。续期成功后的 GET 网络故障仍返回 `ERP_HTTP`。
 - `save` / `verify` 同时传 `erp-items` 输出的 `skipItemIds`（不传按空数组）：因询价故障且无有效报价而排除的型号 ID，必须属于本任务、不重复且不与 `items` 重叠。提交时这些型号的原草稿保留原状，其余型号的草稿照常一并提交。
-- `verify` 用原 payload 和写入前基线重建与 save 相同的完整计划，检查新报价、保留报价、自动带入的其他型号草稿、无货说明、供应商与附件，并拒绝本次替换状态中的额外/重复行；审核流合法保留的旧已通过版本不当作额外待审核行。返回 `verifiedItemIds` 是实际核对范围，`snapshot` 来自同一次详情 GET。不能拿核对时新读取的 snapshot 作为原 expectedSnapshot。
+- `verify` 用原 payload 和写入前基线重建与 save 相同的完整计划，检查新报价、保留报价、自动带入的其他型号草稿、无货说明、供应商与附件，并拒绝本次替换状态中的额外/重复行；审核流合法保留的旧已通过版本不当作额外待审核行。返回 `verifiedItemIds` 是实际核对范围，`snapshot` 来自同一次详情 GET。不能拿核对时新读取的 snapshot 作为原 expectedSnapshot。`inDoneList`、`filledCount`、`itemCount` 是任务汇总观察信息，不参与 `ok`，不能据此确认或否定本次写入。
 - 返回 `{ ok: true, ... }`；出错返回 `{ ok: false, error, ... }`：
   - `ERP_CONTRACT`：接口结构和下面 CONTRACT 记录的不一致（缺字段、类型变了、取值不认识、接口不存在）。停止 ERP 调用，按 [ERP 错误与重试边界](../../references/erp-api.md#erp-错误与重试边界)保存可独立完成的平台本地结果，本轮不取下一 IQ；提示「ERP 接口已修改，烛龙智能询价没有同步，请更新技能」，把 `problems` 写进实跑报告。
   - `ERP_LOGIN`：没登录、读取无法续期或业务 PUT 授权失败，请用户在 BrowserOS neo 里重新登录 ERP（建议勾选「记住我」）；已发/未知 save 仍只读核对。
@@ -523,7 +523,7 @@ async (browser, pageId, req) => {
         if (diff.length) mismatches.push({ itemId: it.itemId, model: item.model, shop: e.shopName, problem: diff.join('；') });
       }
     }
-    // 第二道检查：已回价列表与已填数（需要审核的账号，审核通过前任务留在待处理，不算失败）
+    // 任务汇总观察：列表归属/已填数不证明本次写入，ok 仅由完整实际写入范围的逐项核对决定。
     const done = await call('list', { query: { done: true } });
     if (done.fail) return done.fail;
     const pending = await call('list', { query: { done: false } });

@@ -4,7 +4,7 @@ host: "s.taobao.com"
 lastVerified: 1792045942592
 agent: "claude"
 candidate: false
-opensPage: true
+opensPage: false
 description: "烛龙智能询价：Saved helper for s.taobao.com"
 inputs: {}
 ---

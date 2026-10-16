@@ -4,7 +4,7 @@ host: "s.1688.com"
 lastVerified: 1792067650292
 agent: "claude"
 candidate: false
-opensPage: true
+opensPage: false
 description: "烛龙智能询价：Saved helper for s.1688.com"
 inputs: {}
 ---

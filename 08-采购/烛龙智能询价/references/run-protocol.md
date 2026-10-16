@@ -18,13 +18,17 @@
 新 run 创建时立即写 `{ task, status: "running", createdAt, items: [], platforms: [], submitted: false }`。仅未初始化且没有平台/消息事实的空骨架，恢复时允许首次补入 ERP task，不拿空 snapshot 对账；已有实际断点则不得覆盖。主代理首次读取 ERP 后补齐任务信息和持久化 `erpSnapshot`（见 [ERP 协议](erp-api.md#选任务与读取)）。恢复时读原 `run.json`、各平台文件、未决发送/人助、草稿回执和提交尝试；ERP 新读取不得覆盖原 `deadline`、会话进度或旧基线。先与旧基线核对现 ERP，冲突时不写；检查上轮执行者已停止后，才明确恢复本轮。
 
 - `completedPlatforms` 只用于避免重派询价；ERP 未写回的结果由主代理补写草稿。用户明确跳过也需平台文件 `status: "completed"` 和非空 `skipped` 原因。
-- `interrupted` 恢复先只读停止期间新回复、未决人助及发送证据，保留原 `sentAt` / `followUpAt` / `followUps` / `answeredTopics` / `thankYou` / `deadline`。本身真正业务结束的店不再联系；未知发送不得盲重发，已过消息时限的新回复只提取报价，不重开对话。
+- `interrupted` 恢复先只读停止期间新回复、未决人助及发送证据，保留原 `sentAt` / `followUpAt` / `replyAt` / `followUps` / `answeredTopics` / `thankYou` / `deadline`。本身真正业务结束的店不再联系；未知发送不得盲重发，已过消息时限的新回复只提取报价，不重开对话。
 - 平台中断置 `stopAfterTask: true`；其他平台继续至结束，本轮不提交、不取下一 IQ。只有用户新一轮启动、核实断点及解除阻塞后，主代理才显式清除本轮停止标记；`merge` 不自动清除。中断不是后台恢复授权。
 - 正常报价截止按原业务规则完成收尾的平台可记 `completed`，即使有 `incompleteItems`。全部平台完成后，有效报价仍可正式提交，缺价的未完成型号进 `skipItemIds`；不能把此情形混成执行中断。
 
 ## 发送意图与确认
 
-每条对外消息发送前，平台执行者先将该店 `pendingMessage` 持久化：`{ kind, text, preparedAt, state: "pending" }`。`kind` 为 `initial`、`followUp`、`reply`、`thankYou` 或 `correction`（发错更正）；确认准备内容和发送对象后再操作 UI。发送后读回目标会话，明确出现该消息才写 `state: "confirmed"`、`confirmedAt` 和对应事实：首次询价 `sentAt`，追问 `followUps` / `followUpAt`，答复的 `answeredTopics`，道谢的 `thankYou`。多条消息逐条确认并保存，不覆盖尚未核实的意图。
+每条对外消息发送前，平台执行者先将该店 `pendingMessage` 持久化：`{ kind, text, preparedAt, state: "pending" }`。`kind` 为 `initial`、`followUp`、`reply`、`thankYou` 或 `correction`（发错更正）；确认准备内容和发送对象后再操作 UI。发送后读回目标会话，明确出现该消息才写 `state: "confirmed"`、`confirmedAt` 和对应事实：首次询价 `sentAt`，追问 `followUps` / `followUpAt`，答复的 `answeredTopics` / `replyAt`，道谢的 `thankYou`。答复不改变 `followUps` 或 `followUpAt`。多条消息逐条确认并保存，不覆盖尚未核实的意图；后续意图替换 `pendingMessage` 时仍保留店级 `replyAt`。
+
+`sentAt`、`followUpAt`、`replyAt` 保存经聊天证据确认的实际发送时刻；`confirmedAt` 只表示本次核验时刻，不作为等待起点。计时规则见 [inquiry-rules.md 第 5 节](inquiry-rules.md)。旧断点已经答复但缺少 `replyAt` 时，先核原聊天发送证据再补；无法确定则保留待核、不继续对外发消息，不用本次读取或恢复时刻重置计时。
+
+旧断点若已有 `confirmed` 的 `reply` 意图但缺 `replyAt`，`open-run` / `check --partial` 会报缺字段。主代理按原命令目录和报错文件只读记录（`open-run` 错误含原记录路径）、核原聊天发送证据，确认后只补实际发送时刻再重试恢复，不新建 run、不改原 `confirmedAt` 或其他进度；无法核实则保留原记录并停止该平台。仅有 `answeredTopics` 的旧记录虽可读取，也必须先补证据才继续该店对话。
 
 UI 报错、调用中断或看不清发送结果时保持 `pending`，记录待核事件，不当作未发而重试。恢复先核对目标店、消息内容与聊天时间；有证据已发才补确认，明确未发且仍获授权/未截止才可发送原意图，无法确认就继续待核并禁止最终提交。明确撤销未发消息才记 `cancelled`。`check --partial` 可保留待核意图，completed 校验及正式 `erp-items` 拒绝未确认发送。
 
@@ -70,6 +74,7 @@ UI 报错、调用中断或看不清发送结果时保持 `pending`，记录待�
       "firstHumanReplyAt": "2026-10-15T17:08:56+08:00",
       "followUps": 1,
       "followUpAt": "2026-10-15T17:11:21+08:00",
+      "replyAt": "2026-10-15T17:10:00+08:00",
       "thankYou": "好的，谢谢！",
       "endedAt": "2026-10-15T17:11:50+08:00",
       "endReason": "信息齐全",
@@ -101,6 +106,7 @@ UI 报错、调用中断或看不清发送结果时保持 `pending`，记录待�
 - `endReason`：信息齐全、追问超时、答复后超时、追问次数用完、店家结束聊天、首次回复超时、仅机器人回复、店家无货、店家提问超出范围、店家重复提问、报价截止。旧记录可保留子代理卡住/用户停止的历史值；新执行中断记平台 interruption，不借此结束尚未完成店家会话。
 - `stopQuestion`：因店家提问停止聊天时填 `{ "type": "问题类型", "text": "店家原话" }`，类型按 [inquiry-rules.md 4.4](inquiry-rules.md#44-答复店家的提问)；其他店为 `null`。`finish` 会把它和 `endReason` 写进询价记录，供 `records.mjs stats` 统计。
 - `answeredTopics`：已经答复过店家的话题（如「数量」「型号」「含税要求」「新旧要求」），用来判断店家是否重复提问；没答复过的为空数组。
+- `replyAt`：最近一次已确认答复的实际发送时刻（有效 ISO 时间），未答复时可缺省；不随读回、恢复、道谢或更正更新。已确认的 `reply` 意图必须同时有此字段及非空 `answeredTopics`；`check --partial` 也校验，`merge`、`open-run` 和 `finish` 保留此事实。
 - `inquiry`：`system` 是 ERP 给的原话术（多个型号时是填好型号的模板），`sent` 是实际发出的话术，`added` 是补充的内容（问候或必要信息项）；原样发送时 `added` 为空数组。
 - `thankYou`：发出的道谢原文，没道谢的留空。
 - `condition`、`leadTime`：用 ERP 下拉里的文字；没说的货况写「待确认」、货期留空。

@@ -26,11 +26,11 @@
 
 1. 选任务：`erpApi` 的 `{ op: "list", done: false }` 返回「待处理」任务（`taskId`、任务编号、型号数、已填数等，顺序与页面一致：系统已按超时、紧急、更新时间排好）。
    - 用户指定了任务编号就只做这个任务，完成后不再取下一个（按 [execution.md「停止或继续」](execution.md#停止或继续)直接进入总汇报）。指定的任务不在「待处理」里时，再查「已回价」（`done: true`）；都没有就停止并告诉用户找不到这个任务，不回退处理全部待处理任务。
-   - 没指定时，按列表顺序取第一个本机未提交、未跳过且可继续的任务（manual 若有真实未完 run 则按原断点恢复，无可恢复断点则跳过）：`node "<技能目录>/scripts/records.mjs" next <任务编号1> <任务编号2> …`（按列表顺序列出全部编号），输出的 `next` 就是要做的任务，为 `null` 表示没有要做的。next 返回 resumeRun 时复用其目录；用户指定编号不跳过恢复核验，已提交 run 仍会拒绝直接重开，需先核对 ERP 业务状态。
+   - 没指定时，主代理先按 [停止或继续](execution.md#停止或继续)检查本轮停止边界，从最新列表中过滤本轮已收尾的业务 `manual` 任务，再按剩余原顺序调用 `node "<技能目录>/scripts/records.mjs" next <任务编号1> <任务编号2> …`，取第一个本机未提交、未跳过且可继续的任务。输出的 `next` 为 `null` 表示没有要做的；过滤后无候选也直接结束。用户新一轮启动时清空该排除集合，重新传完整待处理列表；manual 若有真实未完 run 则恢复，无可恢复断点才跳过。next 返回 resumeRun 时复用其目录；用户指定编号不跳过恢复核验，已提交 run 仍会拒绝直接重开，需先核对 ERP 业务状态。
    - 需要审核的账号提交后，任务在审核通过前仍留在「待处理」里，`next` 会因为本机已提交过而跳过它。
 2. 执行 `node "<技能目录>/scripts/records.mjs" open-run <任务编号>`，按 [原 run 恢复协议](run-protocol.md#原-run-恢复与防重复)取得 runDir。仅新任务初始化；同 IQ 原未完 run 优先复用，坏记录/多份未完不盲选。兼容 `new-run` 只输出路径。恢复前确认旧执行者已停止，completed 平台不重派询价。
 3. 读任务：`erpApi` 的 `{ op: "task", taskId }`。返回的 `run` 就是 `run.json` 的开头部分：任务编号 `task`、ERP 任务 ID `taskId`、报价截止时刻 `deadline`、是否需要审核 `reviewRequired`，以及每个型号的 `itemId`、型号、数量和单位、描述、系统话术 `script`、各平台的货源直达链接 `links`。首次把它写进本次目录 `run.json`，补齐 platforms 等字段，并把同级完整 snapshot 保存为 `erpSnapshot`。snapshot 含任务身份、审核/可编辑状态、每型号锁定和全部本人报价字段/状态/附件。恢复未初始化且无平台/消息事实的空骨架时可补齐首次 task 和 snapshot；存在实际断点时读取当前 task/snapshot 仅用于与持久化基线比较，不能覆盖旧基线、deadline 或平台进度；外部变化须核对保留或明确授权变更，不用新读值静默重置 baseline。
-   - `editable` 为 `false` 表示询盘单已取消、回价只能查看：不询价，执行 `node "<技能目录>/scripts/records.mjs" skip <任务编号> 询盘已取消`，告诉用户；没指定任务编号时接着取下一个（见 [execution.md「停止或继续」](execution.md#停止或继续)）。
+   - `editable` 为 `false` 仅表示任务不可编辑、回价只能查看：不询价，执行 `node "<技能目录>/scripts/records.mjs" skip <任务编号> ERP不可编辑`，告诉用户；结合 `lockedItems` 说明已报给客户的型号，只有实际取消状态或证据才称询盘已取消。没指定任务编号时接着取下一个（见 [execution.md「停止或继续」](execution.md#停止或继续)）。
    - 每个型号的 `existingQuotes` 里都已有本人「已提交」或「待审核」的报价时，说明这个任务已经回过价（可能是在别的电脑上）：不再询价，执行 `records.mjs skip <任务编号> 已回过价`；没指定任务编号时接着取下一个。用户指定的任务也一样，告诉用户已回过价；明确要求重跑须先核实 ERP 业务状态与现有提交记录，当前入口拒绝直接重开已提交 run，不删除或伪造旧状态绕过。
    - 已提交或跳过的任务记进本机记录后，`next` 不再选中；需人工处理的任务有真实未完 run 时优先恢复原断点，没有可恢复断点时才跳过（见本文「ERP 错误与重试边界」）。
    - `lockedItems` 里是已报给客户（只读）的型号，跳过，汇报里说明。
@@ -63,7 +63,7 @@
 4. **草稿核对及基线**：用原 payload 调 `{ op: "verify", taskId, submitted: false, items, skipItemIds, expectedSnapshot }`；expectedSnapshot 必须是本次 save 前持久化的原基线。仅 `ok: true` 且 `mismatches` 为空算核对成功。将本次 save 返回的实际写入 itemIds、verify 的 verifiedItemIds 及同次 GET 的 snapshot 保存回执；只把这些 itemIds 对应的 snapshot.items 合并回持久化 erpSnapshot，其他型号保留原基线，防止吸收并发人工改动。不要另读 snapshot 后全量替换基线。恢复时若 save 回包丢失，先用原 draft payload 和原基线 verify，以 verifiedItemIds 确认完整范围；范围或结果不能确认则暂停写回、不盲吸收新值。草稿差异按第 7 条处理。
 5. **完整提交输入**：所有平台真实完成/明确跳过且无提交阻塞时默认 merge，再执行 `erp-items "<本次目录>/run.json"`。全部调用原样传 items 和 skipItemIds；后者只含无有效报价的未完成型号，其旧草稿保留，不随本次提交。有效报价优先于其他平台无货；正常截止 completed 带 incompleteItems 不阻止其他报价提交。没有任何可提交项不调用 save，转人工并本地收尾。有内容时先持久化该完整 payload，执行 save submit:false（含 expectedSnapshot）和 verify submitted:false，按第 4 条核对并更新实际写入范围基线；包括最终无货项在内的完整草稿核对通过后才进入第 6 条。
 6. **提交一次与核对**：提交前先把最终原 payload 持久化在个人 run 目录，写 `submissionAttempt: { state: "pending", at }`，再调用 `{ op: "save", taskId, submit: true, items, skipItemIds, expectedSnapshot: run.erpSnapshot }`。最终提交按完整持久化基线核对所有实际写入型号，包括自动带入的其他草稿，不换新基线绕过冲突。
-   - 提交后用相同原 payload 调 `{ op: "verify", taskId, submitted: true, items, skipItemIds, expectedSnapshot }`，使用本次正式 PUT 前的原基线。核对包含保留报价和自动带入的其他型号草稿。只有 ok 且 mismatches 为空才写 `submitted: true`、真实 stages.submitted 和 attempt.confirmed。需要审核账号的待审核算成功，inDoneList 为 false 不单独算失败；不需要审核时已填数及列表仍按实际结果核对。
+   - 提交后用相同原 payload 调 `{ op: "verify", taskId, submitted: true, items, skipItemIds, expectedSnapshot }`，使用本次正式 PUT 前的原基线。核对包含保留报价和自动带入的其他型号草稿。只有 ok 且 mismatches 为空才确认本次实际写入范围，写 `submitted: true`、真实 stages.submitted 和 attempt.confirmed；需要审核账号的待审核也算本次提交成功。将 `inDoneList`、`filledCount` / `itemCount` 保存为任务汇总观察，不参与 helper 的 ok 判定：不能因仍在待处理、已填数不等于本次提交数或未满型号数判失败，也不能由汇总判成功。部分提交、skip 或 locked 型号可能使任务继续待处理；列表反映整个任务状态，本人已填数还可包含草稿、待审核、作废报价，不能等同已提交数或任务完成数。
    - 任何已发 PUT 或发送状态未知的尝试（pending/unknown/failed/confirmed）都不能再次 submit；请求中断、结果未知记 unknown，只用原 payload 只读 verify。仅 helper 明确返回 writeAttempted:false（确实未进入 PUT）时可记 state:not_sent；修复后用原 payload 重试，调用前再写 pending。错误名、登录恢复或推断均不能代替未发证据；ERP_BIZ 也必须区分 GET 与 PUT 阶段。明确失败/差异转人工，不把未知结果称为未提交草稿。
 
 ### ERP 错误与重试边界
