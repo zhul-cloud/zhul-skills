@@ -15,18 +15,20 @@ Call it:
 
 `helpers["erpApi"](browser, pageId, { op: "task", taskId: 1 })`
 
-- `pageId`：任意一个已登录 ERP 的标签页（同一个 ERP 地址）。脚本只在页面里取令牌、发请求，不点页面，也不返回令牌。
-- `op`：`ping`（检查登录）、`list`（`done`: true 已回价 / false 待处理）、`task`（`taskId`；读任务，返回可直接写进 run.json 的内容及 `snapshot`）、`snapshot`（`taskId`；只读任务与报价快照）、`save`（`taskId`、`items`、必传 `expectedSnapshot`、`submit`: false 存草稿 / true 提交回价）、`verify`（`taskId`、`items`、`submitted`: 是否已提交；逐条核对）。`items` 由 `records.mjs erp-items` 生成。
+- `pageId`：本任务 owned 或用户明确分配的已登录 ERP 标签页（同一个 ERP 地址）；人助前仍须核验 owned 归属。脚本只在页面里取令牌、发请求，不点页面，也不返回令牌。
+- `op`：`ping`（检查登录）、`list`（`done`: true 已回价 / false 待处理）、`task`（`taskId`；读任务，返回可直接写进 run.json 的内容及 `snapshot`）、`snapshot`（`taskId`；只读任务与报价快照）、`save`（`taskId`、`items`、必传 `expectedSnapshot`、`submit`: false 存草稿 / true 提交回价）、`verify`（`taskId`、`items`、必传原 save 的 `expectedSnapshot`、`submitted`: 是否已提交；核对完整写入范围）。`items` 由 `records.mjs erp-items` 生成。
 - `expectedSnapshot` 是首次读取或上次成功核对后持久化的 `snapshot`，不能在恢复时直接用新读快照替换旧基线。每次 `save` 重新读回 ERP，对所有实际写入的型号比较已知报价字段、状态和附件 ID（含提交时自动带入的其他草稿）；变化返回 `ERP_CONFLICT`，不发 PUT。快照没有令牌、附件 URL 或其他未知字段。GET 与 PUT 不是原子事务，主代理必须单一串行写入，ERP 缺少版本条件接口时仍不能排除二者之间的人工修改。
 - `save` 的正常返回都含 `writeAttempted`：进入业务 PUT 调用前的失败为 `false`，进入调用后的成功或错误为 `true`（不表示写入成功）。只有明确返回 `false` 才能按原错误重试边界修复后重试；抛出、中断或没有回包仍属结果未知，只读核对，不推断为 `false`。
-- `save` / `verify` 同时传 `erp-items` 输出的 `skipItemIds`（不传按空数组）：因询价故障且无有效报价而排除的型号 ID，必须属于本任务、不重复且不与 `items` 重叠。提交时这些型号的原草稿保留原状，其余型号的草稿照常一并提交；核对只检查 `items`。
+- GET 遇 HTTP 401 或响应 `code:401` 时最多续期并重读一次；PUT 遇任一种授权失败均返回 `ERP_LOGIN`、`writeAttempted:true`，不自动续期重发。登录恢复后按原 payload 只读核对。续期成功后的 GET 网络故障仍返回 `ERP_HTTP`。
+- `save` / `verify` 同时传 `erp-items` 输出的 `skipItemIds`（不传按空数组）：因询价故障且无有效报价而排除的型号 ID，必须属于本任务、不重复且不与 `items` 重叠。提交时这些型号的原草稿保留原状，其余型号的草稿照常一并提交。
+- `verify` 用原 payload 和写入前基线重建与 save 相同的完整计划，检查新报价、保留报价、自动带入的其他型号草稿、无货说明、供应商与附件，并拒绝本次替换状态中的额外/重复行；审核流合法保留的旧已通过版本不当作额外待审核行。返回 `verifiedItemIds` 是实际核对范围，`snapshot` 来自同一次详情 GET。不能拿核对时新读取的 snapshot 作为原 expectedSnapshot。
 - 返回 `{ ok: true, ... }`；出错返回 `{ ok: false, error, ... }`：
   - `ERP_CONTRACT`：接口结构和下面 CONTRACT 记录的不一致（缺字段、类型变了、取值不认识、接口不存在）。停止 ERP 调用，按 [ERP 错误与重试边界](../../references/erp-api.md#erp-错误与重试边界)保存可独立完成的平台本地结果，本轮不取下一 IQ；提示「ERP 接口已修改，烛龙智能询价没有同步，请更新技能」，把 `problems` 写进实跑报告。
-  - `ERP_LOGIN`：没登录或登录已过期且无法续期，请用户在 BrowserOS neo 里重新登录 ERP（建议勾选「记住我」）。
-  - `ERP_BIZ`：ERP 拒绝了这次请求（如「货期不在可选值内」），草稿阶段可按 `message` 改正；正式提交已发出或结果未知时仅核对原 payload，不重提，仅明确 `writeAttempted:false` 可按 [ERP 重试边界](../../references/erp-api.md#erp-错误与重试边界)修复后以原 payload 重试。
+  - `ERP_LOGIN`：没登录、读取无法续期或业务 PUT 授权失败，请用户在 BrowserOS neo 里重新登录 ERP（建议勾选「记住我」）；已发/未知 save 仍只读核对。
+  - `ERP_BIZ`：ERP 拒绝了这次请求（如「货期不在可选值内」）；只有明确 `writeAttempted:false` 才可按 [ERP 重试边界](../../references/erp-api.md#erp-错误与重试边界)纠错重试。已发或结果未知的 save（含草稿）只核对原 payload 和原基线，不重放。
   - `ERP_CONFLICT`：ERP 与持久化基线不同；保留当前 ERP，不自动换新基线重试，读回差异并转人工核对。
-  - `ERP_HTTP`：网络或服务器错误、ERP 标签页不可用，只读或未正式提交的草稿阶段稍等后最多重试一次；正式提交已发出或结果未知时只重试只读核对，不重复提交；仍失败按 [ERP 错误与重试边界](../../references/erp-api.md#erp-错误与重试边界)转人工。
-  - `SKILL_INPUT`：技能传进来的内容不对（如型号不在任务里、货况文字不认识），本次输入未进入业务 PUT 写入；草稿阶段按协议改正，正式提交仅明确 `writeAttempted:false` 的 not_sent 可修复后用原 payload 重试；此前已发或未知尝试仍只读核对，不因本次错误重提。
+  - `ERP_HTTP`：网络或服务器错误、ERP 标签页不可用；只读请求或明确 `writeAttempted:false` 的 save 稍等后最多重试一次。已发或结果未知的 save（含草稿）只用原 payload 和原基线 verify，登录恢复不授权重放；仍失败按 [ERP 错误与重试边界](../../references/erp-api.md#erp-错误与重试边界)转人工。
+  - `SKILL_INPUT`：技能传进来的内容不对（如型号不在任务里、货况文字不认识），本次输入未进入业务 PUT 写入；仅明确 `writeAttempted:false` 可按协议修复后重试，正式提交须记 not_sent 并用原 payload；此前已发或未知 save（含草稿）仍只读核对，不因本次错误重放。
 - ERP 新增的字段不算错误，在返回的 `extraFields` 里列出，写进实跑报告即可。
 
 ```js
@@ -166,19 +168,29 @@ async (browser, pageId, req) => {
       let token = read();
       if (!token) return { login: true, reason: 'no-token' };
       let http = await send(token);
-      if (http === 401) {
+      const unauthorized = () => {
+        if (http === 401) return true;
+        try { return JSON.parse(slot.text).code === 401; } catch (e) { return false; }
+      };
+      if (unauthorized()) {
+        // PUT 已进入发送，不凭授权错误推断未写入，也不在 helper 内重放。
+        if (method !== 'GET') return { login: true, reason: 'expired' };
         // 与前端相同：用 HttpOnly 续期 Cookie 换新令牌，写回原来的位置（只有登录时勾了「记住我」才有续期 Cookie）
+        let refreshed = false;
         try {
           const r = await fetch(refreshPath, { method: 'POST', credentials: 'include' });
           const j = await r.json();
-          if (j && j.code === 0 && j.data && j.data.accessToken) {
+          if (r.status >= 200 && r.status < 300 && j && j.code === 0 && j.data
+            && typeof j.data.accessToken === 'string' && j.data.accessToken.trim()) {
             if (sessionStorage.getItem('akt')) sessionStorage.setItem('akt', j.data.accessToken);
             else localStorage.setItem('zhul_token', j.data.accessToken);
             token = j.data.accessToken;
-            http = await send(token);
+            refreshed = true;
           }
         } catch (e) { /* 续期失败，按未登录处理 */ }
-        if (http === 401) return { login: true, reason: 'expired' };
+        // 续期后的业务 GET 网络故障属于 ERP_HTTP，不能被上面的续期失败处理吞掉。
+        if (refreshed) http = await send(token);
+        if (unauthorized()) return { login: true, reason: 'expired' };
       }
       return { http, length: slot.text.length };
     }, { key, method: ep.method, url, refreshPath: CONTRACT.endpoints.refresh.path });
@@ -355,32 +367,31 @@ async (browser, pageId, req) => {
     return skipped;
   };
 
-  if (op === 'save') {
-    const notSent = (result) => ({ ...result, writeAttempted: false });
+  const snapshotFailure = () => {
     const snapshotProblems = [];
     const quoteSpec = CONTRACT.endpoints.detail.data.items[0].quotes[0];
     check(req.expectedSnapshot, { taskId: 'number', task: 'string', reviewRequired: 'boolean', editable: 'boolean',
       items: [{ itemId: 'number', model: 'string', locked: 'boolean', quotes: [{
         ...Object.fromEntries(quoteFields.map((k) => [k, quoteSpec[k]])), attachmentIds: ['number'] }] }] },
       'expectedSnapshot', snapshotProblems);
-    if (snapshotProblems.length) return notSent({ ok: false, error: 'SKILL_INPUT', problems: snapshotProblems,
-      hint: 'save 必须携带首次读取或上次成功核对后持久化的完整 snapshot' });
-    const d = await loadDicts();
-    if (d.fail) return notSent(d.fail);
-    const r = await loadTask(req.taskId);
-    if (r.fail) return notSent(r.fail);
-    const review = !!r.data.reviewRequired;
-    const byId = new Map(r.data.items.map((i) => [i.id, i]));
+    if (snapshotProblems.length) return { ok: false, error: 'SKILL_INPUT', problems: snapshotProblems,
+      hint: 'save / verify 必须携带首次读取或上次成功核对后持久化的完整 snapshot' };
+    return null;
+  };
+
+  const prepareWrite = (data, dicts, submit) => {
+    const review = !!data.reviewRequired;
+    const byId = new Map(data.items.map((i) => [i.id, i]));
     const problems = [];
     const skipped = skippedItems(byId, problems);
-    const body = { items: [], submit: !!req.submit };
+    const body = { items: [], submit: !!submit };
     const touched = new Set();
     for (const [n, it] of (req.items || []).entries()) {
       const item = byId.get(it.itemId);
       if (!item) { problems.push({ path: `items[${n}].itemId`, expected: '本任务的型号', actual: it.itemId }); continue; }
       if (item.locked) continue; // 已报给客户的型号不能再改
       touched.add(item.id);
-      const fresh = (it.quotes || []).map((q, j) => toEntry(q, d.data, `items[${n}].quotes[${j}]`, problems));
+      const fresh = (it.quotes || []).map((q, j) => toEntry(q, dicts, `items[${n}].quotes[${j}]`, problems));
       const freshKeys = new Set(fresh.map((e) => keyOf(e.channel, e.shopName)));
       // 本人原有的报价行照带，同一平台同一店铺的以本次为准
       const existing = keptQuotes(item, keepStatuses(body.submit, review), new Set(), review);
@@ -394,10 +405,10 @@ async (browser, pageId, req) => {
       if (quotes.length) body.items.push({ itemId: item.id, quotes });
       else if (it.noStock) body.items.push({ itemId: item.id, noStock: true, noStockNote: String(it.noStockNote || '').slice(0, 300), quotes: [] });
     }
-    if (problems.length) return notSent({ ok: false, error: 'SKILL_INPUT', problems, hint: '技能整理的报价取值不对，改正 run.json 后重试' });
+    if (problems.length) return { fail: { ok: false, error: 'SKILL_INPUT', problems, hint: '技能整理的报价取值不对，改正 run.json 后重试' } };
     // 提交时，本人在其他型号上的草稿也一并提交；故障无价而显式排除的型号保留原状
     if (body.submit) {
-      for (const item of r.data.items) {
+      for (const item of data.items) {
         if (touched.has(item.id) || skipped.has(item.id) || item.locked) continue;
         const drafts = item.quotes.filter((q) => q.status === 1);
         if (!drafts.length) continue;
@@ -406,10 +417,24 @@ async (browser, pageId, req) => {
           : { itemId: item.id, quotes: keptQuotes(item, keepStatuses(true, review), new Set(), review) });
       }
     }
-    if (!body.items.length) return notSent({ ok: false, error: 'SKILL_INPUT', problems: [{ path: 'items', expected: '至少一个型号有报价或无货', actual: 'empty' }] });
+    if (!body.items.length) return { fail: { ok: false, error: 'SKILL_INPUT', problems: [{ path: 'items', expected: '至少一个型号有报价或无货', actual: 'empty' }] } };
     const bodyProblems = [];
     check(body, CONTRACT.endpoints.save.body, 'save.body', bodyProblems);
-    if (bodyProblems.length) return notSent({ ok: false, error: 'SKILL_INPUT', problems: bodyProblems });
+    if (bodyProblems.length) return { fail: { ok: false, error: 'SKILL_INPUT', problems: bodyProblems } };
+    return { body, review };
+  };
+
+  if (op === 'save') {
+    const notSent = (result) => ({ ...result, writeAttempted: false });
+    const invalidSnapshot = snapshotFailure();
+    if (invalidSnapshot) return notSent(invalidSnapshot);
+    const d = await loadDicts();
+    if (d.fail) return notSent(d.fail);
+    const r = await loadTask(req.taskId);
+    if (r.fail) return notSent(r.fail);
+    const prepared = prepareWrite(r.data, d.data, req.submit);
+    if (prepared.fail) return notSent(prepared.fail);
+    const { body, review } = prepared;
     const current = snapshotOf(r.data);
     const expected = req.expectedSnapshot;
     const conflicts = [];
@@ -432,32 +457,54 @@ async (browser, pageId, req) => {
   }
 
   if (op === 'verify') {
+    const invalidSnapshot = snapshotFailure();
+    if (invalidSnapshot) return invalidSnapshot;
     const d = await loadDicts();
     if (d.fail) return d.fail;
     const r = await loadTask(req.taskId);
     if (r.fail) return r.fail;
-    const review = !!r.data.reviewRequired;
     const submitted = !!req.submitted;
+    // 用写入前持久化的基线重建同一次 PUT 的完整计划，不能用读回的新值当期望。
+    const baseline = req.expectedSnapshot;
+    const before = { reviewRequired: baseline.reviewRequired, items: baseline.items.map((i) => ({ ...i, id: i.itemId,
+      quotes: i.quotes.map((q) => ({ ...q, attachments: q.attachmentIds.map((id) => ({ id })) })) })) };
+    const prepared = prepareWrite(before, d.data, submitted);
+    if (prepared.fail) return prepared.fail;
+    const { body, review } = prepared;
     const okStatus = submitted ? (review ? [3, 2] : [2]) : [1];
     const byId = new Map(r.data.items.map((i) => [i.id, i]));
     const problems = [];
     skippedItems(byId, problems);
     if (problems.length) return { ok: false, error: 'SKILL_INPUT', problems };
     const mismatches = [];
+    const current = snapshotOf(r.data);
+    for (const field of ['taskId', 'task', 'reviewRequired', 'editable']) {
+      if (baseline[field] !== current[field]) mismatches.push({ path: `snapshot.${field}`, problem: '任务信息与写入前基线不同' });
+    }
     const same = (a, b) => Math.abs(Number(a) - Number(b)) < 0.005;
-    for (const [n, it] of (req.items || []).entries()) {
+    for (const it of body.items) {
       const item = byId.get(it.itemId);
       if (!item) { mismatches.push({ itemId: it.itemId, problem: '型号不在任务里' }); continue; }
-      const live = item.quotes.filter((q) => okStatus.includes(q.status));
+      // 审核流旧的已通过版本可合法并存，优先核对本次写入的待审核版本。
+      const writeStatus = submitted ? (review ? 3 : 2) : 1;
+      const live = item.quotes.filter((q) => okStatus.includes(q.status)).sort((a, b) => (a.status === writeStatus ? 0 : 1) - (b.status === writeStatus ? 0 : 1));
+      const rowKey = (q) => q.noStock ? 'noStock' : keyOf(q.channel, q.shopName);
+      const expectedKeys = new Set(it.noStock ? ['noStock'] : it.quotes.map(rowKey));
+      const counts = new Map();
+      for (const q of item.quotes.filter((q) => q.status === writeStatus)) {
+        const key = rowKey(q);
+        counts.set(key, (counts.get(key) || 0) + 1);
+        if (!expectedKeys.has(key)) mismatches.push({ itemId: it.itemId, model: item.model, shop: q.shopName, problem: '本次写入状态中有额外报价行' });
+      }
+      for (const [key, count] of counts) if (count > 1) mismatches.push({ itemId: it.itemId, model: item.model, shop: key, problem: '本次写入状态中有重复报价行' });
       if (submitted && item.quotes.some((q) => q.status === 1)) mismatches.push({ itemId: it.itemId, model: item.model, problem: '提交后仍有草稿' });
       if (it.noStock && !(it.quotes || []).length) {
-        if (!live.some((q) => q.noStock) && !live.length) mismatches.push({ itemId: it.itemId, model: item.model, problem: '无货没有录入' });
+        const hit = live.find((q) => q.noStock);
+        if (!hit) mismatches.push({ itemId: it.itemId, model: item.model, problem: '无货没有录入' });
+        else if (String(hit.note ?? '').trim() !== String(it.noStockNote ?? '').trim()) mismatches.push({ itemId: it.itemId, model: item.model, problem: '无货说明不一致' });
         continue;
       }
-      for (const [j, q] of (it.quotes || []).entries()) {
-        const p = [];
-        const e = toEntry(q, d.data, `items[${n}].quotes[${j}]`, p);
-        if (p.length) return { ok: false, error: 'SKILL_INPUT', problems: p, hint: '技能整理的报价取值不对，改正 run.json 后重试' };
+      for (const e of it.quotes || []) {
         const hit = live.find((x) => x.channel === e.channel && String(x.shopName || '').trim() === e.shopName);
         if (!hit) { mismatches.push({ itemId: it.itemId, model: item.model, shop: e.shopName, problem: '没有找到这条报价' }); continue; }
         const diff = [];
@@ -468,6 +515,11 @@ async (browser, pageId, req) => {
         if ((hit.leadTime ?? 0) !== e.leadTime) diff.push(`货期码 ${hit.leadTime} ≠ ${e.leadTime}`);
         if (String(hit.note ?? '').trim() !== e.note.trim()) diff.push('备注不一致');
         if ((hit.freeShipping !== false) !== e.freeShipping) diff.push(`包邮 ${hit.freeShipping !== false} ≠ ${e.freeShipping}`);
+        if ((hit.supplierId ?? null) !== (e.supplierId ?? null)) diff.push('供应商不一致');
+        // 非审核流明确保留的推荐必须保留；未指定推荐的行仍允许 ERP 自动推荐。
+        if (e.recommended === true && hit.recommended !== true) diff.push('原推荐标记未保留');
+        const attachments = (hit.attachments || []).map((a) => a.id).sort((a, b) => a - b);
+        if (JSON.stringify(attachments) !== JSON.stringify([...e.attachmentIds].sort((a, b) => a - b))) diff.push('附件不一致');
         if (diff.length) mismatches.push({ itemId: it.itemId, model: item.model, shop: e.shopName, problem: diff.join('；') });
       }
     }
@@ -477,7 +529,8 @@ async (browser, pageId, req) => {
     const pending = await call('list', { query: { done: false } });
     if (pending.fail) return pending.fail;
     const row = [...done.data, ...pending.data].find((t) => t.id === Number(req.taskId));
-    return { ok: mismatches.length === 0, mismatches, reviewRequired: review, snapshot: snapshotOf(r.data),
+    return { ok: mismatches.length === 0, mismatches, reviewRequired: review, snapshot: current,
+      verifiedItemIds: body.items.map((i) => i.itemId),
       inDoneList: done.data.some((t) => t.id === Number(req.taskId)), filledCount: row ? row.filledCount : null,
       itemCount: row ? row.itemCount : null, extraFields: extras() };
   }

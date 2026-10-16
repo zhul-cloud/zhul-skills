@@ -17,15 +17,20 @@ const dictItems = (type) => type === 'inquiry_tax_rate'
   : DICTS[type].map((n, i) => ({ itemName: n, itemValue: String(i + 1), status: 1 }));
 
 function makeEnv(state) {
-  const store = { local: { zhul_token: 'T1' }, session: {} };
+  const store = structuredClone(state.store || { local: { zhul_token: 'T1' }, session: {} });
   const calls = [];
   const fetchMock = async (url, opts = {}) => {
     const method = opts.method || 'GET';
     calls.push({ method, url, body: opts.body ? JSON.parse(opts.body) : null });
     const reply = (http, json) => ({ status: http, text: async () => JSON.stringify(json), json: async () => json });
-    if (url === '/api/v1/auth/refresh') return state.refreshOk ? reply(200, { code: 0, data: { accessToken: 'T2' } }) : reply(401, { code: 401 });
+    if (url === '/api/v1/auth/refresh') {
+      if (state.refreshError) throw new Error('mock refresh unavailable');
+      if (state.refreshReply) return { status: state.refreshReply.http, text: async () => state.refreshReply.text, json: async () => JSON.parse(state.refreshReply.text) };
+      return state.refreshOk ? reply(200, { code: 0, data: { accessToken: 'T2' } }) : reply(401, { code: 401 });
+    }
     const auth = (opts.headers || {}).Authorization;
-    if (state.expireT1 && auth === 'Bearer T1') return reply(401, { code: 401, message: 'expired' });
+    if ((state.expireT1 && auth === 'Bearer T1') || state.expireAll || (method === 'PUT' && state.put401)) return reply(state.authHttp ?? 401, { code: 401, message: 'expired' });
+    if (state.networkAfterRefresh && auth === 'Bearer T2') throw new Error('mock network failed after successful refresh');
     if (method === 'PUT' && state.putNetworkError) throw new Error('mock PUT network unavailable');
     if (state.networkError) throw new Error('mock network unavailable');
     if (state.httpReply) return { status: state.httpReply.http, text: async () => state.httpReply.text };
@@ -40,7 +45,19 @@ function makeEnv(state) {
       const done = url.includes('done=true');
       return reply(200, { code: 0, message: 'ok', data: done === !!state.done ? [{ id: 1, taskCode: 'IQT', itemCount: 2, filledCount: state.filled ?? 0, status: 2, newField: 1 }] : [] });
     }
-    if (method === 'PUT') { state.lastPut = JSON.parse(opts.body); return reply(200, state.putReply || { code: 0, message: 'ok' }); }
+    if (method === 'PUT') {
+      state.lastPut = JSON.parse(opts.body);
+      if (state.putApplyThenError) {
+        for (const item of state.lastPut.items) {
+          const target = state.detail.items.find((i) => i.id === item.itemId);
+          const status = state.lastPut.submit ? (state.detail.reviewRequired ? 3 : 2) : 1;
+          target.quotes = item.noStock ? [q({ id: 9000 + item.itemId, status, noStock: true, unitPrice: undefined, note: item.noStockNote })]
+            : item.quotes.map((value, i) => ({ ...value, id: 9000 + i, status, attachments: value.attachmentIds.map((id) => ({ id })) }));
+        }
+        throw new Error('mock response lost after server applied PUT');
+      }
+      return reply(200, state.putReply || { code: 0, message: 'ok' });
+    }
     if (state.detailReply) return reply(state.detailReply.http, state.detailReply.json);
     const detail = JSON.parse(JSON.stringify(state.detail));
     return reply(200, { code: 0, message: 'ok', data: detail });
@@ -76,7 +93,7 @@ const t = async (name, state, req, check) => {
   const env = makeEnv(state);
   let out;
   try {
-    if (req.op === 'save' && !Object.hasOwn(req, 'expectedSnapshot')) {
+    if (['save', 'verify'].includes(req.op) && !Object.hasOwn(req, 'expectedSnapshot')) {
       // 旧用例共用首次读取的基线；结构错误用例模拟读取后 ERP 契约发生变化。
       let initial = await readSnapshot(state.detail || baseDetail());
       if (!initial.ok) initial = await readSnapshot(baseDetail());
@@ -184,7 +201,7 @@ await t('核对无货允许保留原有正常报价', { detail: baseDetail([q({ 
   { op: 'verify', taskId: 1, submitted: true, items: [{ itemId: 1, noStock: true, quotes: [] }] },
   (o) => o.ok);
 await t('核对真实无货通过', { detail: baseDetail([q({ status: 3, noStock: true, unitPrice: undefined })]) },
-  { op: 'verify', taskId: 1, submitted: true, items: [{ itemId: 1, noStock: true, quotes: [] }] }, (o) => o.ok);
+  { op: 'verify', taskId: 1, submitted: true, items: [{ itemId: 1, noStock: true, noStockNote: 'n', quotes: [] }] }, (o) => o.ok);
 await t('核对非法税率不能假成功', { detail: baseDetail([{ ...live[0], taxRate: 1 }]) },
   { op: 'verify', taskId: 1, submitted: true, items: [{ itemId: 1, quotes: [{ ...fresh[0].quotes[0], taxRate: 1 }] }] },
   (o) => o.error === 'SKILL_INPUT' && o.problems.some((p) => p.path.endsWith('.taxRate')));
@@ -309,6 +326,111 @@ await t('PUT响应契约错误writeAttempted=true', { detail: baseDetail(), putR
   (o, s, env) => o.error === 'ERP_CONTRACT' && o.writeAttempted === true && env.calls.filter((c) => c.method === 'PUT').length === 1);
 await t('PUT成功writeAttempted=true', { detail: baseDetail() }, writeReq,
   (o, s, env) => o.ok && o.writeAttempted === true && env.calls.filter((c) => c.method === 'PUT').length === 1);
+
+// 20. 会话过期的读取可续期；业务 PUT 一旦进入发送不能靠 401 推断未写入或自动重发。
+const refreshes = (env) => env.calls.filter((c) => c.url === '/api/v1/auth/refresh').length;
+await t('session令牌优先且续期只回写session原位置', { detail: baseDetail(), store: { local: { zhul_token: 'OLD' }, session: { akt: 'T1' } }, expireT1: true, refreshOk: true },
+  { op: 'ping' }, (o, s, env) => o.ok && env.store.session.akt === 'T2' && env.store.local.zhul_token === 'OLD' && refreshes(env) === 1);
+await t('无令牌直接ERP_LOGIN且不请求接口', { store: { local: {}, session: {} } }, { op: 'ping' },
+  (o, s, env) => o.error === 'ERP_LOGIN' && o.reason === 'no-token' && env.calls.length === 0);
+await t('续期后仍401不循环续期', { expireAll: true, refreshOk: true }, { op: 'ping' },
+  (o, s, env) => o.error === 'ERP_LOGIN' && refreshes(env) === 1 && env.calls.length === 3);
+for (const [label, extra] of [
+  ['网络失败', { refreshError: true }],
+  ['非JSON', { refreshReply: { http: 200, text: '<html>login</html>' } }],
+  ['错误HTTP即使code0', { refreshReply: { http: 500, text: '{"code":0,"data":{"accessToken":"T2"}}' } }],
+  ['令牌类型错误', { refreshReply: { http: 200, text: '{"code":0,"data":{"accessToken":123}}' } }],
+]) {
+  await t(`续期${label}不污染令牌`, { expireT1: true, ...extra }, { op: 'ping' },
+    (o, s, env) => o.error === 'ERP_LOGIN' && env.store.local.zhul_token === 'T1' && env.calls.length === 2);
+}
+await t('save前GET过期可续期且业务PUT恰好一次', { detail: baseDetail(), expireT1: true, refreshOk: true }, writeReq,
+  (o, s, env) => o.ok && o.writeAttempted === true && refreshes(env) === 1 && env.calls.filter((c) => c.method === 'PUT').length === 1);
+await t('续期成功后GET网络失败为ERP_HTTP而非登录失败', { expireT1: true, refreshOk: true, networkAfterRefresh: true }, { op: 'ping' },
+  (o, s, env) => o.error === 'ERP_HTTP' && env.store.local.zhul_token === 'T2' && refreshes(env) === 1 && env.calls.length === 3);
+for (const submit of [false, true]) {
+  await t(`${submit ? '提交' : '草稿'}PUT401不续期重发`, { detail: baseDetail(), put401: true, refreshOk: true }, { ...writeReq, submit },
+    (o, s, env) => o.error === 'ERP_LOGIN' && o.writeAttempted === true && refreshes(env) === 0 && env.calls.filter((c) => c.method === 'PUT').length === 1);
+}
+await t('verify过期自动续期仅GET及refresh无PUT', { detail: baseDetail(live), expireT1: true, refreshOk: true },
+  { op: 'verify', taskId: 1, submitted: true, items: fresh },
+  (o, s, env) => o.ok && refreshes(env) === 1 && env.calls.every((c) => c.method !== 'PUT'));
+await t('verify续期失败保留ERP_LOGIN且不写入', { detail: baseDetail(live), expireT1: true },
+  { op: 'verify', taskId: 1, submitted: true, items: fresh },
+  (o, s, env) => o.error === 'ERP_LOGIN' && env.calls.every((c) => c.method !== 'PUT'));
+await t('HTTP200/code401读取续期后成功', { expireT1: true, authHttp: 200, refreshOk: true }, { op: 'ping' },
+  (o, s, env) => o.ok && refreshes(env) === 1 && env.store.local.zhul_token === 'T2');
+await t('HTTP200/code401续期失败返回ERP_LOGIN', { expireT1: true, authHttp: 200 }, { op: 'ping' },
+  (o, s, env) => o.error === 'ERP_LOGIN' && refreshes(env) === 1);
+await t('PUT HTTP200/code401不续期重发', { detail: baseDetail(), put401: true, authHttp: 200, refreshOk: true }, writeReq,
+  (o, s, env) => o.error === 'ERP_LOGIN' && o.writeAttempted === true && refreshes(env) === 0 && env.calls.filter((c) => c.method === 'PUT').length === 1);
+
+// 21. 原提交基线决定全体写入范围；其他型号旧草稿与同型号旧店也不能漏验。
+const carried = q({ id: 501, shopName: '原草稿店', note: '原备注', attachments: [{ id: 90 }] });
+const fullBaseline = (await readSnapshot(baseDetail([], [carried]))).snapshot;
+await t('提交核对发现自动带入的其他型号仍草稿', { detail: baseDetail(live, [carried]) },
+  { op: 'verify', taskId: 1, submitted: true, items: fresh, expectedSnapshot: fullBaseline },
+  (o) => !o.ok && o.mismatches.some((m) => m.itemId === 2 && m.problem === '提交后仍有草稿'));
+await t('提交核对发现自动带入的旧报价遗失', { detail: baseDetail(live) },
+  { op: 'verify', taskId: 1, submitted: true, items: fresh, expectedSnapshot: fullBaseline },
+  (o) => !o.ok && o.mismatches.some((m) => m.itemId === 2));
+await t('提交核对发现同型号保留旧报价遗失', { detail: baseDetail(live) },
+  { op: 'verify', taskId: 1, submitted: true, items: fresh, expectedSnapshot: (await readSnapshot(baseDetail([carried]))).snapshot },
+  (o) => !o.ok && o.mismatches.some((m) => m.shop === carried.shopName));
+await t('提交核对发现原附件遗失', { detail: baseDetail(live, [{ ...carried, status: 3, attachments: [] }]) },
+  { op: 'verify', taskId: 1, submitted: true, items: fresh, expectedSnapshot: fullBaseline },
+  (o) => !o.ok && o.mismatches.some((m) => m.itemId === 2 && m.problem.includes('附件')));
+await t('完整提交旧草稿内容与附件正确通过', { detail: baseDetail(live, [{ ...carried, status: 3 }]) },
+  { op: 'verify', taskId: 1, submitted: true, items: fresh, expectedSnapshot: fullBaseline }, (o) => o.ok);
+for (const submitted of [false, true]) {
+  for (const expectedSnapshot of [undefined, null, {}]) {
+    await t('核对缺原持久化基线不读取也不假成功', { detail: baseDetail(live) },
+      { op: 'verify', taskId: 1, submitted, items: fresh, expectedSnapshot },
+      (o, s, env) => o.error === 'SKILL_INPUT' && env.calls.length === 0);
+  }
+}
+await t('部分草稿核对不把其他型号草稿算已写入', { detail: baseDetail([{ ...live[0], status: 1 }], [carried]) },
+  { op: 'verify', taskId: 1, submitted: false, items: fresh, expectedSnapshot: fullBaseline },
+  (o) => o.ok && JSON.stringify(o.verifiedItemIds) === '[1]');
+await t('草稿核对发现保留旧店报价遗失', { detail: baseDetail([{ ...live[0], status: 1 }]) },
+  { op: 'verify', taskId: 1, submitted: false, items: fresh, expectedSnapshot: (await readSnapshot(baseDetail([carried]))).snapshot },
+  (o) => !o.ok && o.mismatches.some((m) => m.shop === carried.shopName));
+await t('核对缺原无货说明不能假成功', { detail: baseDetail([q({ status: 3, noStock: true, unitPrice: undefined, note: '错误说明' })]) },
+  { op: 'verify', taskId: 1, submitted: true, items: [{ itemId: 1, noStock: true, noStockNote: '原无货说明', quotes: [] }], expectedSnapshot: (await readSnapshot(baseDetail())).snapshot },
+  (o) => !o.ok && o.mismatches.some((m) => m.problem === '无货说明不一致'));
+for (const [submitted, review, status] of [[false, true, 1], [true, true, 3], [true, false, 2]]) {
+  await t('核对拒绝本次替换状态桶额外报价', { detail: baseDetail([{ ...live[0], status }, q({ status, shopName: '意外店' })], [], review) },
+    { op: 'verify', taskId: 1, submitted, items: fresh, expectedSnapshot: (await readSnapshot(baseDetail([], [], review))).snapshot },
+    (o) => !o.ok && o.mismatches.some((m) => m.problem === '本次写入状态中有额外报价行'));
+  await t('核对拒绝同店重复报价即使第一条正确', { detail: baseDetail([{ ...live[0], status }, { ...live[0], id: 999, status, unitPrice: 999 }], [], review) },
+    { op: 'verify', taskId: 1, submitted, items: fresh, expectedSnapshot: (await readSnapshot(baseDetail([], [], review))).snapshot },
+    (o) => !o.ok && o.mismatches.some((m) => m.problem === '本次写入状态中有重复报价行'));
+}
+await t('无货草稿不能与额外有价行同时核对成功', { detail: baseDetail([q({ status: 1, noStock: true, unitPrice: undefined, note: '无货' }), q({ status: 1, shopName: '意外有货店' })]) },
+  { op: 'verify', taskId: 1, submitted: false, items: [{ itemId: 1, noStock: true, noStockNote: '无货', quotes: [] }], expectedSnapshot: (await readSnapshot(baseDetail())).snapshot },
+  (o) => !o.ok && o.mismatches.some((m) => m.problem === '本次写入状态中有额外报价行'));
+await t('审核流同店旧已通过版本合法保留且核对新待审核版本', { detail: baseDetail([q({ ...live[0], id: 10, status: 2, unitPrice: 99 }), { ...live[0], id: 11 }]) },
+  { op: 'verify', taskId: 1, submitted: true, items: fresh, expectedSnapshot: (await readSnapshot(baseDetail([q({ ...live[0], id: 10, status: 2, unitPrice: 99 })]))).snapshot },
+  (o) => o.ok);
+await t('非审核流明确保留的原推荐标记丢失不能假成功', { detail: baseDetail([{ ...live[0], status: 2 }, { ...carried, status: 2, recommended: false }], [], false) },
+  { op: 'verify', taskId: 1, submitted: true, items: fresh, expectedSnapshot: (await readSnapshot(baseDetail([{ ...carried, recommended: true }], [], false))).snapshot },
+  (o) => !o.ok && o.mismatches.some((m) => m.problem === '原推荐标记未保留'));
+await t('未指定推荐的新报价允许ERP自动推荐', { detail: baseDetail([{ ...live[0], status: 2, recommended: true }], [], false) },
+  { op: 'verify', taskId: 1, submitted: true, items: fresh, expectedSnapshot: (await readSnapshot(baseDetail([], [], false))).snapshot },
+  (o) => o.ok);
+for (const submit of [false, true]) {
+  const state = { detail: baseDetail([], [carried]), putApplyThenError: true, refreshOk: true };
+  const env = makeEnv(state);
+  const payload = { taskId: 1, items: fresh, expectedSnapshot: (await readSnapshot(state.detail)).snapshot };
+  const saved = await erpApi(env.browser, 1, { op: 'save', ...payload, submit });
+  // 恢复读取时 token 也已过期，依旧只能续期 GET 后核对原 payload。
+  state.expireT1 = true;
+  const verified = await erpApi(env.browser, 1, { op: 'verify', ...payload, submitted: submit });
+  results.push({ name: `${submit ? '提交' : '草稿'}PUT服务端已写入但丢回包，登录恢复后只读核对完整范围`,
+    pass: saved.error === 'ERP_HTTP' && saved.writeAttempted === true && verified.ok
+      && JSON.stringify(verified.verifiedItemIds) === (submit ? '[1,2]' : '[1]')
+      && env.calls.filter((c) => c.method === 'PUT').length === 1 && refreshes(env) === 1 });
+}
 
 for (const r of results) console.log(`${r.pass ? 'PASS' : 'FAIL'}  ${r.name}${r.pass ? '' : '\n      ' + r.out + '\n      put=' + r.put}`);
 const passed = results.filter((r) => r.pass).length;

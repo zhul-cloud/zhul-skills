@@ -28,6 +28,16 @@
 
 UI 报错、调用中断或看不清发送结果时保持 `pending`，记录待核事件，不当作未发而重试。恢复先核对目标店、消息内容与聊天时间；有证据已发才补确认，明确未发且仍获授权/未截止才可发送原意图，无法确认就继续待核并禁止最终提交。明确撤销未发消息才记 `cancelled`。`check --partial` 可保留待核意图，completed 校验及正式 `erp-items` 拒绝未确认发送。
 
+## 人助记录与解除
+
+平台人助保存在本平台文件 `humanHelp`，ERP 写回人助由主代理保存在 `run.json.humanHelp`。至少记录范围、owner、requestId、目标标签/网址、BrowserOS 标签组 ID（可取得时）、请求创建时刻、状态和同一阻塞事件核验失败次数；会话句柄只在工具要求时保留，不写登录令牌。原生回包有 requestId 则原样保存；错误回包未给 ID 时记 `requestId:null`，保留原始返回和分类来源，不虚构 ID、不 await 不存在的请求。`status` 是工作流分类，`nativeStatus` 保留工具实际状态，工具未返回状态时为 `null`，另记 `statusSource`；不得补造原生返回。
+
+新请求及尚未核验的交回都记 `verified:false`。仅 owner 对原目标页实际核验解除后，当前事件才满足 `{ status: "resolved", verified: true, verifiedAt: "有效 ISO 时间" }`，继而清暂停；`resolved` 回包本身不等于解除。`waiting`、`pending`、`unknown`、失败、取消、超时或未核验交回都阻止平台 completed 和正式提交输入。无任何人助时此字段可缺省。`merge` 将平台当前事件保存在主文件 `platformHumanHelp.<平台>`，缺少字段不会清除已有阻塞；恢复必须明确写新的已核验事件，不能靠删除字段解除。
+
+新一轮用户启动后，旧取消/超时等事件若经实际检查已解除，先把完整旧事件移入同文件 `humanHelpHistory`，保留原 requestId、原始返回和取消/超时分类；当前事件记 `{ status: "resolved", verified: true, verifiedAt, resolutionSource: "recovery-check", nativeStatus: null, requestId: null }`，并记录当前目标/归属和核验依据。该恢复检查没有当前请求 ID，原请求 ID 只留历史。这是恢复检查结果，不声称旧请求原生 resolved，不继续 await 已终态旧请求，也不凭恢复权限重发消息或提交。
+
+运行中、部分合并和本地 draft payload 允许保留未决人助，以保存其他平台结果；ERP 人助未解除时仍禁止实际 ERP 写入，见 [ERP 协议](erp-api.md#草稿核对提交一次与再核对)。记录工具不负责调用或消费 BrowserOS 人助，也不能证明页面真实已解除。
+
 ## run.json
 
 本次询价的全部过程记录，边做边写，放在本次目录：
@@ -98,9 +108,10 @@ UI 报错、调用中断或看不清发送结果时保持 `pending`，记录待�
 - `stages`：每个业务阶段真正结束时记时间；执行中断不得补写 `repliesDone` 或未完店的 `endedAt`。已有自然结束店的时间保留。
 - `platformStates`：`{ "淘宝": "completed", "1688": "interrupted" }`，来自平台合并；`platformInterruptions` 按平台保留中断信息。`stopAfterTask` 为本轮停止批次标记，合并中断只会设 `true`，不自动清除。
 - `erpSnapshot`：首次 `task` 返回的完整快照，作为后续 `save.expectedSnapshot`；恢复必须用它对账。成功 verify 后仅按实际写入 itemIds 更新相应型号的基线，未写型号保留原值，见 [ERP 协议](erp-api.md#草稿核对提交一次与再核对)。
-- `draftReceipt`：由主代理持久化本次草稿 payload 的路径/内容、save 实际写入 itemIds、verify 同次 GET 快照、核对状态及失败/待写回范围。它不授权平台直接写 ERP；不可把未核对成功的结果称为已保存。
+- `draftReceipt`：由主代理持久化本次草稿 payload 的路径/内容和写入前 expectedSnapshot、save 实际写入 itemIds、verify 的 verifiedItemIds 及同次 GET 快照、核对状态和失败/待写回范围。它不授权平台直接写 ERP；不可把未核对成功的结果称为已保存。
 - `submissionAttempt`：提交前先保存原 payload，再写 `{ state: "pending", at: "ISO 时间" }`；结果未知改 `unknown`，核对通过改 `confirmed`，已发 PUT 后确定失败可记 `failed`；仅 helper 明确 writeAttempted:false 时可记 `{ state: "not_sent", at, writeAttempted: false }`，缺少明确 false 不成立。已发或发送状态未知的尝试阻止重新生成最终输入/重复提交，只用原 payload 做 verify。仅 helper 明确返回 writeAttempted:false 才可记 not_sent，保留原 payload 修复后重试，调用前重新写 pending；不能根据错误名推断。没有实际提交动作不能伪造 attempt。
 - `submitted`：提交回价并核对通过后为 `true`（见 [erp-api.md「草稿、核对、提交一次与再核对」](erp-api.md#草稿核对提交一次与再核对)），否则为 `false`。
+- `humanHelp` / `platformHumanHelp` / `humanHelpHistory`：按[人助记录与解除](#人助记录与解除)保存当前 ERP/平台阻塞与历史事件，不以平台 completed 或删除字段掩盖未决人助。
 
 ## 平台记录与合并
 
@@ -122,11 +133,11 @@ UI 报错、调用中断或看不清发送结果时保持 `pending`，记录待�
 - 平台 `status` 为 `running`、`completed`、`interrupted`。全部店按业务规则真正收尾才写 completed 和 `stages.repliesDone`；正常截止收尾可带 `incompleteItems`。用户明确跳过写 completed 及 `skipped` 原因，无需伪造回复完成时间。兼容旧记录会依据 `repliesDone` 推断状态，新记录始终显式写 status。
 - 中断写 `status: "interrupted"` 和 `interruption: { reason: "原因" }`，不得有平台 `endedAt` 或 `repliesDone`；保留自然结束店的 `endedAt`，未完店保持原进度。人工失败、超时、取消、执行者卡住和记录损坏都不是用户主动跳过。
 - `noStock` 每条 `{ itemId, note }`；`incompleteItems` 每条 `{ itemId, reason }`。`merge` 补上 platform。已确认无货才填前者，故障未完填后者，不能仅凭 skipped 原因推断。
-- 人助状态在本平台 `humanHelp`（ERP 写回人助由主代理记主文件）持续落盘，至少含 owner、requestId、目标标签/网址、请求状态、创建时间及同阻塞事件核验失败次数；待决请求先续接而不新建。此为执行记录约定，不新增技能配置或假定 records 负责调用人助。
+- 人助状态与解除凭据按[人助记录与解除](#人助记录与解除)持续落盘；待决请求先续接而不新建。completed 校验拒绝未核验人助，partial 允许保留 running/interrupted 断点。
 - 平台结束前执行 `check "<本次目录>" <平台>`；断点保存执行 `check "<本次目录>" <平台> --partial`。部分校验允许 running/interrupted/未决发送，但不省略业务字段合法性检查。
 - 一个平台结果持久化后即通知主代理。主代理 `merge "<本次目录>" --partial <平台...>` 只合并指定快照，保留其他平台已有合并结果；随后 `erp-items "<本次目录>/run.json" --draft` 仅生成已有报价，不推断未完成无货。其余平台继续，所有 ERP 写入由主代理串行完成。
 - 默认 `merge "<本次目录>"` 要求全部平台完成或明确跳过；按平台覆盖，不重复追加。空 incompleteItems 清除该平台旧未完标记。合并校验失败不改 run.json；中断合并设置 stopAfterTask。
-- 正式 `erp-items` 要求全部平台完成/明确跳过、无本轮 stopAfterTask、无未知发送、无已发或发送状态未知的提交尝试。`incompleteItems` 单独存在不禁止提交：正常截止已完成收尾时，缺价跳 skipItemIds，有效报价照常保留。
+- 正式 `erp-items` 要求全部平台完成/明确跳过、无本轮 stopAfterTask、无未知发送、无未解除平台/ERP 人助、无已发或发送状态未知的提交尝试。`incompleteItems` 单独存在不禁止提交：正常截止已完成收尾时，缺价跳 skipItemIds，有效报价照常保留。
 
 ## 数据目录
 
