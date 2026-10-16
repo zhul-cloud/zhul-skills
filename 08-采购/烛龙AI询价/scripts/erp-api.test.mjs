@@ -1,0 +1,139 @@
+// ERP 接口脚本 erpApi 的离线测试：用模拟的 ERP 和 page.evaluate（返回超过 4000 字节时像 BrowserOS 一样只给文件引用）。
+// 不连 ERP、不需要浏览器。改了 helpers/_erp/erpApi.md 之后运行：node scripts/erp-api.test.mjs
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const md = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'helpers', '_erp', 'erpApi.md'), 'utf8');
+// 仓库在 Windows 上检出时是 CRLF 换行
+const src = md.match(/```js\r?\n([\s\S]*?)\r?\n```/)[1];
+const erpApi = (0, eval)('(' + src + ')');
+
+const DICTS = {
+  inquiry_item_condition: ['全新原装', '99新', '翻新', '二手', '拆机件', '国产替代', '待确认'],
+  inquiry_lead_time: ['现货', '1-2天', '2-3天', '3-5天', '5-7天', '1-2周', '2-4周', '4-8周', '8周以上'],
+};
+const dictItems = (type) => type === 'inquiry_tax_rate'
+  ? [{ itemName: '13%', itemValue: '13', status: 1 }, { itemName: '3%', itemValue: '3', status: 1 }, { itemName: '1%', itemValue: '1', status: 1 }]
+  : DICTS[type].map((n, i) => ({ itemName: n, itemValue: String(i + 1), status: 1 }));
+
+function makeEnv(state) {
+  const store = { local: { zhul_token: 'T1' }, session: {} };
+  const calls = [];
+  const fetchMock = async (url, opts = {}) => {
+    const method = opts.method || 'GET';
+    calls.push({ method, url, body: opts.body ? JSON.parse(opts.body) : null });
+    const reply = (http, json) => ({ status: http, text: async () => JSON.stringify(json), json: async () => json });
+    if (url === '/api/v1/auth/refresh') return state.refreshOk ? reply(200, { code: 0, data: { accessToken: 'T2' } }) : reply(401, { code: 401 });
+    const auth = (opts.headers || {}).Authorization;
+    if (state.expireT1 && auth === 'Bearer T1') return reply(401, { code: 401, message: 'expired' });
+    if (state.http404 && url.startsWith('/api/v1/inquiry/my-tasks/')) return reply(404, {});
+    if (url.startsWith('/api/v1/system/dict-items')) {
+      const t = decodeURIComponent(url.split('dictType=')[1]);
+      let data = dictItems(t);
+      if (state.dropLabel && t === 'inquiry_lead_time') data = data.filter((d) => d.itemName !== state.dropLabel);
+      return reply(200, { code: 0, message: 'ok', data });
+    }
+    if (url.startsWith('/api/v1/inquiry/my-tasks?')) {
+      const done = url.includes('done=true');
+      return reply(200, { code: 0, message: 'ok', data: done === !!state.done ? [{ id: 1, taskCode: 'IQT', itemCount: 2, filledCount: state.filled ?? 0, status: 2, newField: 1 }] : [] });
+    }
+    if (method === 'PUT') { state.lastPut = JSON.parse(opts.body); return reply(200, state.putReply || { code: 0, message: 'ok' }); }
+    const detail = JSON.parse(JSON.stringify(state.detail));
+    return reply(200, { code: 0, message: 'ok', data: detail });
+  };
+  const sandboxPage = {
+    evaluate: async (fn, arg) => {
+      globalThis.window = globalThis.window || {};
+      globalThis.sessionStorage = { getItem: (k) => store.session[k] ?? null, setItem: (k, v) => { store.session[k] = v; } };
+      globalThis.localStorage = { getItem: (k) => store.local[k] ?? null, setItem: (k, v) => { store.local[k] = v; } };
+      globalThis.fetch = fetchMock;
+      const value = await fn(arg);
+      const size = Buffer.byteLength(JSON.stringify({ page: 1, value }) ?? '');
+      if (size > 4000) return { page: 1, path: 'x.txt', writtenToFile: true, contentLength: size };
+      return { page: 1, value };
+    },
+  };
+  return { browser: { page: () => sandboxPage }, store, calls };
+}
+
+const q = (o) => ({ id: Math.floor(Math.random() * 1e6), channel: 1, shopName: '店A', unitPrice: 100, taxIncluded: false, itemCondition: 1, leadTime: 1, note: 'n', noStock: false, freeShipping: true, status: 1, attachments: [], ...o });
+const baseDetail = (quotes1 = [], quotes2 = [], review = true, extra = {}) => ({
+  task: { id: 1, taskCode: 'IQT', itemCount: 2, filledCount: 0, status: 2, remainingMinutes: 60, quoteDeadline: '2026-10-23' },
+  items: [
+    { id: 1, model: 'ES-M1', quantity: 10, unit: '只', description: 'd'.repeat(1500), inquiryScript: 's', searchKeywords: ['ES-M1', 'Keyence ES-M1'], locked: false, quotes: quotes1, ...extra },
+    { id: 2, model: 'GL-VM31FN', quantity: 1, unit: '套', inquiryScript: 's2', searchKeywords: ['GL-VM31FN'], locked: false, quotes: quotes2 },
+  ],
+  reviewRequired: review,
+});
+const fresh = [{ itemId: 1, quotes: [{ channel: '淘宝', shopName: '店B', unitPrice: 120.456, taxIncluded: true, taxRate: 13, condition: '', leadTime: '3-5天', note: '新' }] }];
+const results = [];
+const t = async (name, state, req, check) => {
+  const env = makeEnv(state);
+  let out;
+  try { out = await erpApi(env.browser, 1, req); } catch (e) { out = { thrown: String(e) }; }
+  let pass = false;
+  try { pass = check(out, state, env); } catch (e) { pass = false; out.checkError = String(e); }
+  results.push({ name, pass, ...(pass ? {} : { out: JSON.stringify(out).slice(0, 600), put: JSON.stringify(state.lastPut || null).slice(0, 600) }) });
+};
+
+// 1. 读任务：超过 4KB 的详情能分段取回；新增字段进 extraFields
+await t('task 大响应分段 + 新字段', { detail: baseDetail([], [], true, { brandNew: 'x' }) }, { op: 'task', taskId: 1 },
+  (o) => o.ok && o.run.items.length === 2 && o.run.items[0].links['淘宝'][1].endsWith('Keyence%20ES-M1') && o.extraFields.includes('detail.data.items[].brandNew'));
+// 2. 存草稿：只带原有草稿，不带待审核和已通过的（否则会多出一份草稿）
+await t('存草稿不复制待审核/已提交', { detail: baseDetail([q({ status: 3, shopName: '店P' }), q({ status: 2, shopName: '店S' }), q({ status: 1, shopName: '店D' })]) },
+  { op: 'save', taskId: 1, submit: false, items: fresh },
+  (o, s) => o.ok && s.lastPut.submit === false && JSON.stringify(s.lastPut.items[0].quotes.map((x) => x.shopName)) === JSON.stringify(['店D', '店B']));
+// 3. 提交（需要审核）：带草稿和待审核，同店铺草稿优先，不带已通过
+await t('提交（审核）保留规则', { detail: baseDetail([q({ status: 3, shopName: '店P', unitPrice: 1 }), q({ status: 1, shopName: '店P', unitPrice: 2 }), q({ status: 2, shopName: '店S' })]) },
+  { op: 'save', taskId: 1, submit: true, items: fresh },
+  (o, s) => { const qs = s.lastPut.items[0].quotes; return qs.length === 2 && qs[0].shopName === '店P' && qs[0].unitPrice === 2 && qs[1].shopName === '店B'; });
+// 4. 提交（不需要审核）：带草稿和已提交，不带待审核；同店铺以本次为准
+await t('提交（不审核）保留规则 + 同店替换', { detail: baseDetail([q({ status: 2, shopName: '店S' }), q({ status: 2, shopName: '店B', unitPrice: 9 })], [], false) },
+  { op: 'save', taskId: 1, submit: true, items: fresh },
+  (o, s) => { const qs = s.lastPut.items[0].quotes; return qs.length === 2 && qs[0].shopName === '店S' && qs[1].shopName === '店B' && qs[1].unitPrice === 120.46 && qs[1].taxRate === 13 && qs[1].itemCondition === 7 && qs[1].leadTime === 4; });
+// 5. 提交时其他型号的草稿一并提交
+await t('提交带上其他型号草稿', { detail: baseDetail([], [q({ status: 1, shopName: '店X' })]) }, { op: 'save', taskId: 1, submit: true, items: fresh },
+  (o, s) => s.lastPut.items.length === 2 && s.lastPut.items[1].itemId === 2 && s.lastPut.items[1].quotes[0].shopName === '店X');
+// 6. 存草稿时不带其他型号
+await t('存草稿不带其他型号', { detail: baseDetail([], [q({ status: 1, shopName: '店X' })]) }, { op: 'save', taskId: 1, submit: false, items: fresh },
+  (o, s) => s.lastPut.items.length === 1);
+// 7. 无货
+await t('无货', { detail: baseDetail() }, { op: 'save', taskId: 1, submit: false, items: [{ itemId: 2, noStock: true, noStockNote: '问了 3 家无货', quotes: [] }] },
+  (o, s) => s.lastPut.items[0].noStock === true && s.lastPut.items[0].quotes.length === 0);
+// 8. 不认识的取值、不在任务里的型号 → SKILL_INPUT，不发 PUT
+await t('取值不认识被拦下', { detail: baseDetail() }, { op: 'save', taskId: 1, submit: false, items: [{ itemId: 1, quotes: [{ channel: '闲鱼', shopName: 'x', unitPrice: 1, condition: '九成新', leadTime: '1周' }] }, { itemId: 9, quotes: [] }] },
+  (o, s) => o.error === 'SKILL_INPUT' && o.problems.length === 4 && !s.lastPut);
+// 9. 接口结构变了：缺字段、类型变了、状态码不认识、字典缺取值、接口不存在 → ERP_CONTRACT
+const noModel = baseDetail(); delete noModel.items[0].model;
+await t('缺字段 → ERP_CONTRACT', { detail: noModel }, { op: 'task', taskId: 1 }, (o) => o.error === 'ERP_CONTRACT' && o.problems[0].path.endsWith('.model'));
+const badType = baseDetail(); badType.items[0].quantity = '10';
+await t('类型变了 → ERP_CONTRACT', { detail: badType }, { op: 'task', taskId: 1 }, (o) => o.error === 'ERP_CONTRACT' && o.problems[0].actual === 'string');
+await t('状态码不认识 → ERP_CONTRACT', { detail: baseDetail([q({ status: 9 })]) }, { op: 'task', taskId: 1 }, (o) => o.error === 'ERP_CONTRACT');
+await t('字典缺取值 → ERP_CONTRACT', { detail: baseDetail(), dropLabel: '现货' }, { op: 'task', taskId: 1 }, (o) => o.error === 'ERP_CONTRACT' && o.endpoint === 'dict');
+await t('接口不存在 → ERP_CONTRACT', { detail: baseDetail(), http404: true }, { op: 'task', taskId: 1 }, (o) => o.error === 'ERP_CONTRACT');
+await t('提交前发现结构变了不发 PUT', { detail: noModel }, { op: 'save', taskId: 1, submit: true, items: fresh }, (o, s) => o.error === 'ERP_CONTRACT' && !s.lastPut);
+// 10. ERP 拒绝 → ERP_BIZ
+await t('ERP 拒绝 → ERP_BIZ', { detail: baseDetail(), putReply: { code: 400, message: 'ES-M1 的货期不在可选值内' } }, { op: 'save', taskId: 1, submit: true, items: fresh },
+  (o) => o.error === 'ERP_BIZ' && o.message.includes('货期'));
+// 11. 令牌过期：能续期就续期并写回原位置；续不了 → ERP_LOGIN
+await t('令牌过期续期', { detail: baseDetail(), expireT1: true, refreshOk: true }, { op: 'ping' }, (o, s, env) => o.ok && env.store.local.zhul_token === 'T2');
+await t('续期失败 → ERP_LOGIN', { detail: baseDetail(), expireT1: true, refreshOk: false }, { op: 'ping' }, (o) => o.error === 'ERP_LOGIN');
+// 12. 核对：一致、不一致、提交后仍有草稿、待审核算成功
+const live = [q({ status: 3, channel: 1, shopName: '店B', unitPrice: 120.46, taxIncluded: true, taxRate: 13, itemCondition: 7, leadTime: 4, note: '新' })];
+await t('核对一致（待审核算成功）', { detail: baseDetail(live), filled: 1 }, { op: 'verify', taskId: 1, submitted: true, items: fresh },
+  (o) => o.ok && o.mismatches.length === 0 && o.inDoneList === false && o.filledCount === 1);
+await t('核对发现单价不一致', { detail: baseDetail([{ ...live[0], unitPrice: 121 }]) }, { op: 'verify', taskId: 1, submitted: true, items: fresh },
+  (o) => !o.ok && o.mismatches[0].problem.includes('单价'));
+await t('核对发现提交后仍有草稿', { detail: baseDetail([...live, q({ status: 1, shopName: '店Z' })]) }, { op: 'verify', taskId: 1, submitted: true, items: fresh },
+  (o) => !o.ok && o.mismatches.some((m) => m.problem === '提交后仍有草稿'));
+await t('不需审核时待审核不算', { detail: baseDetail(live, [], false) }, { op: 'verify', taskId: 1, submitted: true, items: fresh },
+  (o) => !o.ok && o.mismatches[0].problem === '没有找到这条报价');
+// 13. 页面通信异常不抛出
+const broken = { page: () => ({ evaluate: async () => { throw new Error('No tab with given id'); } }) };
+let brokenOut; try { brokenOut = await erpApi(broken, 1, { op: 'ping' }); } catch (e) { brokenOut = { thrown: String(e) }; }
+results.push({ name: '标签页关了不抛出', pass: brokenOut.error === 'ERP_HTTP', ...(brokenOut.error === 'ERP_HTTP' ? {} : { out: JSON.stringify(brokenOut) }) });
+
+for (const r of results) console.log(`${r.pass ? 'PASS' : 'FAIL'}  ${r.name}${r.pass ? '' : '\n      ' + r.out + '\n      put=' + r.put}`);
+const passed = results.filter((r) => r.pass).length;
+console.log(`${passed}/${results.length} 通过`);
+if (passed !== results.length) process.exit(1);
