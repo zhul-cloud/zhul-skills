@@ -9,8 +9,8 @@ const script = fileURLToPath(new URL('./records.mjs', import.meta.url));
 const now = () => new Date().toISOString();
 const ago = (minutes) => new Date(Date.now() - minutes * 60000).toISOString();
 const quote = (itemId = 11, extra = {}) => ({ itemId, price: 100, taxIncluded: false, ...extra });
-const shop = (extra = {}) => ({ platform: '淘宝', shop: '测试店', itemIds: [11], status: '已回复', quotes: [quote()], ...extra });
-const run = (extra = {}) => ({ task: 'IQ-TEST', taskId: 1, items: [{ itemId: 11, model: 'MODEL-A' }, { itemId: 22, model: 'MODEL-B' }], platforms: ['淘宝', '1688'], shops: [], noStock: [], submitted: false, ...extra });
+const shop = (extra = {}) => ({ platform: '淘宝', shop: '测试店', itemIds: [11], sentAt: ago(1), status: '已回复', quotes: [quote()], ...extra });
+const run = (extra = {}) => ({ task: 'IQ-TEST', taskId: 1, items: [{ itemId: 11, model: 'MODEL-A' }, { itemId: 22, model: 'MODEL-B' }], platforms: ['淘宝', '1688'], platformStates: { '淘宝': 'completed', '1688': 'completed' }, shops: [], noStock: [], submitted: false, ...extra });
 const part = (platform = '淘宝', extra = {}) => ({ platform, shops: [], noStock: [], stages: { repliesDone: now() }, ...extra });
 
 function fixture(t, value = run()) {
@@ -368,4 +368,310 @@ test('watch in background exits after completed platforms and waits for paused p
     const stalled = background(3000);
     assert.equal(stalled.status, 0, stalled.stderr);
     assert.equal(JSON.parse(stalled.stdout).result, 'stalled');
+});
+
+test('interrupted snapshot preserves finished shops, draft quotes and other running platforms', (t) => {
+    const sentAt = ago(20);
+    const finishedAt = ago(10);
+    const f = fixture(t, run({ platformStates: {} }));
+    const shops = [shop({ sentAt, endedAt: finishedAt, endReason: '已确认报价', followUps: 1, followUpAt: ago(15), answeredTopics: ['用途'], thankYou: { sentAt: finishedAt } }), shop({ shop: '尚未回复店', status: '未回复', quotes: [], itemIds: [22], sentAt })];
+    const interrupted = part('淘宝', { status: 'interrupted', stages: { inquiryDone: ago(19) }, interruption: { reason: '登录失效' }, shops });
+    f.write('run-淘宝.json', interrupted);
+    f.write('run-1688.json', part('1688', { status: 'running', stages: {} }));
+    f.ok('check', f.dir, '淘宝', '--partial');
+    assert.notEqual(f.cli('check', f.dir, '淘宝').status, 0);
+    f.ok('merge', f.dir, '--partial', '淘宝');
+    const first = JSON.parse(readFileSync(f.path, 'utf8'));
+    assert.equal(first.stopAfterTask, true);
+    assert.equal(first.platformStates['淘宝'], 'interrupted');
+    assert.deepEqual(first.shops, shops);
+    assert.equal(f.json('watch', f.dir, '--once').result, 'running');
+    f.write('run-1688.json', part('1688', { status: 'completed', shops: [shop({ platform: '1688', shop: '1688报价店', itemIds: [22], quotes: [quote(22, { price: 200 })] })] }));
+    f.ok('merge', f.dir, '--partial', '1688');
+    const draft = f.json('erp-items', f.path, '--draft');
+    assert.deepEqual(draft.items.map((i) => [i.itemId, i.quotes[0].unitPrice]), [[11, 100], [22, 200]]);
+    assert.notEqual(f.cli('erp-items', f.path).status, 0);
+    const before = readFileSync(f.path, 'utf8');
+    assert.notEqual(f.cli('merge', f.dir).status, 0);
+    assert.equal(readFileSync(f.path, 'utf8'), before);
+    const watched = f.json('watch', f.dir, '--once');
+    assert.equal(watched.result, 'interrupted');
+    assert.equal(watched.finished.length, 1);
+    assert.equal(watched.interrupted.length, 1);
+    assert.equal(watched.stopAfterTask, true);
+    f.ok('finish', f.path);
+    assert.equal(f.lines('records.jsonl').find((r) => r.shop === '测试店').followUps, 1);
+});
+
+test('partial merge selects only named persisted files and does not infer noStock', (t) => {
+    const f = fixture(t, run({ platformStates: {} }));
+    f.write('run-淘宝.json', part('淘宝', { status: 'running', stages: {}, shops: [shop()], noStock: [{ itemId: 22, note: '当前询到无货' }] }));
+    f.write('run-1688.json', '{broken-other-platform');
+    assert.notEqual(f.cli('merge', f.dir, '--partial').status, 0);
+    f.ok('merge', f.dir, '--partial', '淘宝');
+    const draft = f.json('erp-items', f.path, '--draft');
+    assert.deepEqual(draft.items.map((i) => i.itemId), [11]);
+    assert.deepEqual(draft.skipItemIds, [22]);
+    assert.notEqual(f.cli('erp-items', f.path).status, 0);
+});
+
+test('platform interruption cannot fake completion but keeps ended shops intact', (t) => {
+    const f = fixture(t);
+    for (const extra of [{ stages: { repliesDone: now() } }, { endedAt: now(), stages: {} }, { stages: {}, interruption: {} }]) {
+        f.write('run-淘宝.json', part('淘宝', { status: 'interrupted', interruption: { reason: '验证码' }, ...extra }));
+        assert.notEqual(f.cli('check', f.dir, '淘宝', '--partial').status, 0);
+    }
+    f.write('run-淘宝.json', part('淘宝', { status: 'interrupted', stages: {}, interruption: { reason: '验证码' }, shops: [shop({ endedAt: now() })] }));
+    f.ok('check', f.dir, '淘宝', '--partial');
+});
+
+test('pending sends survive checkpoints and require confirmation before completion', (t) => {
+    const f = fixture(t, run({ platformStates: {} }));
+    const pendingMessage = { kind: 'initial', text: '请报价', preparedAt: ago(1), state: 'pending' };
+    f.write('run-淘宝.json', part('淘宝', { status: 'running', stages: {}, shops: [shop({ sentAt: undefined, status: '未回复', quotes: [], pendingMessage })] }));
+    f.ok('check', f.dir, '淘宝', '--partial');
+    f.ok('merge', f.dir, '--partial', '淘宝');
+    assert.deepEqual(JSON.parse(readFileSync(f.path, 'utf8')).shops[0].pendingMessage, pendingMessage);
+    assert.notEqual(f.cli('erp-items', f.path).status, 0);
+    f.write('run-淘宝.json', part('淘宝', { status: 'completed', shops: [shop({ pendingMessage })] }));
+    assert.notEqual(f.cli('check', f.dir, '淘宝').status, 0);
+    for (const changes of [{ kind: 'initial', sentAt: undefined }, { kind: 'followUp', followUps: 0, followUpAt: undefined }]) {
+        const { kind, ...fields } = changes;
+        f.write('run-淘宝.json', part('淘宝', { shops: [shop({ ...fields, pendingMessage: { ...pendingMessage, kind, state: 'confirmed', confirmedAt: now() } })] }));
+        assert.notEqual(f.cli('check', f.dir, '淘宝').status, 0);
+    }
+    f.write('run-淘宝.json', part('淘宝', { shops: [shop({ followUps: 1, followUpAt: now(), pendingMessage: { ...pendingMessage, kind: 'followUp', state: 'confirmed', confirmedAt: now() } })] }));
+    f.ok('check', f.dir, '淘宝');
+    f.write('run-淘宝.json', part('淘宝', { shops: [shop({ pendingMessage: { ...pendingMessage, kind: 'correction', state: 'confirmed', confirmedAt: now() } })] }));
+    f.ok('check', f.dir, '淘宝');
+});
+
+test('finish archives a snapshot once, excludes unsent candidates and allows later revisions', (t) => {
+    const f = fixture(t, run({ shops: [shop({ sentAt: undefined, shop: '仅候选', status: '未回复', quotes: [] }), shop({ sentAt: undefined, shop: '公开挂牌店', status: '挂牌价' }), shop()] }));
+    f.ok('finish', f.path);
+    const before = readFileSync(join(f.home, '.zhul-trade-sourcing', 'records.jsonl'), 'utf8');
+    f.ok('finish', f.path);
+    assert.equal(readFileSync(join(f.home, '.zhul-trade-sourcing', 'records.jsonl'), 'utf8'), before);
+    assert.equal(f.lines('processed-tasks.jsonl').length, 1);
+    assert.deepEqual(f.lines('records.jsonl').map((r) => r.shop), ['公开挂牌店', '测试店']);
+    const value = JSON.parse(readFileSync(f.path, 'utf8'));
+    value.shops[2].quotes[0].price = 105;
+    f.write('run.json', value);
+    f.ok('finish', f.path);
+    assert.equal(f.lines('processed-tasks.jsonl').length, 2);
+    value.submitted = true;
+    f.write('run.json', value);
+    f.ok('finish', f.path);
+    f.ok('finish', f.path);
+    assert.equal(f.lines('processed-tasks.jsonl').length, 3);
+    assert.equal(f.json('processed', 'IQ-TEST').processed, true);
+});
+
+test('new-run resumes the same directory and open-run keeps deadline, messages and completed platforms', (t) => {
+    const f = fixture(t);
+    const dir = f.ok('new-run', 'IQ-RESUME').trim();
+    const initial = f.json('open-run', 'IQ-RESUME');
+    assert.equal(initial.runDir, dir);
+    assert.equal(initial.resumed, true);
+    const pendingMessage = { kind: 'thankYou', text: '谢谢', preparedAt: ago(1), state: 'pending' };
+    const value = run({ task: 'IQ-RESUME', deadline: ago(-10), platformStates: {}, shops: [] });
+    writeFileSync(join(dir, 'run.json'), JSON.stringify(value));
+    const taobao = part('淘宝', { status: 'completed', shops: [shop()] });
+    writeFileSync(join(dir, 'run-淘宝.json'), JSON.stringify(taobao));
+    writeFileSync(join(dir, 'run-1688.json'), JSON.stringify(part('1688', { status: 'interrupted', stages: {}, interruption: { reason: '登录失败' }, shops: [shop({ platform: '1688', pendingMessage })] })));
+    const before = readFileSync(join(dir, 'run.json'), 'utf8');
+    const result = f.json('open-run', 'IQ-RESUME');
+    assert.equal(result.runDir, dir);
+    assert.equal(result.resumed, true);
+    assert.equal(result.needsErpReconcile, true);
+    assert.equal(result.stopAfterTask, true);
+    assert.deepEqual(result.completedPlatforms, ['淘宝']);
+    assert.equal(readFileSync(join(dir, 'run.json'), 'utf8'), before);
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, 'run-淘宝.json'), 'utf8')), taobao);
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, 'run-1688.json'), 'utf8')).shops[0].pendingMessage, pendingMessage);
+    f.ok('manual', 'IQ-RESUME', '登录失败');
+    assert.equal(f.json('next', 'IQ-RESUME', 'IQ-OTHER').resumeRun, dir);
+    assert.equal(f.json('next', 'IQ-EARLIER', 'IQ-RESUME').next, 'IQ-EARLIER');
+});
+
+test('new runs use unique names for different IQs and repeated fresh runs in the same second', (t) => {
+    const f = fixture(t);
+    const one = f.json('open-run', 'IQ-A');
+    assert.equal(one.resumed, false);
+    assert.equal(f.ok('new-run', 'IQ-A').trim(), one.runDir);
+    const two = f.ok('new-run', 'IQ-B').trim();
+    assert.notEqual(one.runDir, two);
+    writeFileSync(join(one.runDir, 'run.json'), JSON.stringify(run({ task: 'IQ-A', simulation: true })));
+    const fresh = f.json('open-run', 'IQ-A');
+    assert.equal(fresh.resumed, false);
+    assert.notEqual(fresh.runDir, one.runDir);
+});
+
+test('resume fails closed for ambiguous, corrupt or uninitialized missing records', (t) => {
+    const f = fixture(t);
+    const first = f.ok('new-run', 'IQ-AMBIGUOUS').trim();
+    const second = join(dirname(first), 'IQ-AMBIGUOUS-second');
+    mkdirSync(second);
+    copyFileSync(join(first, 'run.json'), join(second, 'run.json'));
+    assert.notEqual(f.cli('open-run', 'IQ-AMBIGUOUS').status, 0);
+    assert.notEqual(f.cli('next', 'IQ-AMBIGUOUS').status, 0);
+    writeFileSync(join(second, 'run.json'), '{');
+    assert.notEqual(f.cli('new-run', 'IQ-AMBIGUOUS').status, 0);
+    rmSync(join(second, 'run.json'));
+    assert.notEqual(f.cli('new-run', 'IQ-AMBIGUOUS').status, 0);
+});
+
+test('submitted and simulated runs never become new inquiry or business archives', (t) => {
+    const f = fixture(t);
+    const dir = f.ok('new-run', 'IQ-SUBMITTED').trim();
+    writeFileSync(join(dir, 'run.json'), JSON.stringify(run({ task: 'IQ-SUBMITTED', submitted: true })));
+    assert.notEqual(f.cli('open-run', 'IQ-SUBMITTED').status, 0);
+    assert.notEqual(f.cli('new-run', 'IQ-SUBMITTED').status, 0);
+    assert.equal(f.json('next', 'IQ-SUBMITTED', 'IQ-NEW').next, 'IQ-NEW');
+    for (const fields of [{ simulation: true }, { simulated: true }, { dryRun: true }, { mode: 'simulation' }]) {
+        f.write('run.json', run({ shops: [shop()], ...fields }));
+        assert.notEqual(f.cli('finish', f.path).status, 0);
+        assert.notEqual(f.cli('erp-items', f.path).status, 0);
+    }
+    assert.equal(existsSync(join(f.home, '.zhul-trade-sourcing', 'records.jsonl')), false);
+});
+
+for (const state of ['pending', 'unknown', 'failed', 'confirmed']) {
+    test(`every recorded ${state} submission attempt prevents automatic second payload`, (t) => {
+        const f = fixture(t, run({ shops: [shop()], submissionAttempt: { state, at: now() }, submissionPayload: { taskId: 1, items: [] } }));
+        assert.notEqual(f.cli('erp-items', f.path).status, 0);
+        assert.notEqual(f.cli('erp-items', f.path, '--draft').status, 0);
+        assert.deepEqual(JSON.parse(readFileSync(f.path, 'utf8')).submissionPayload, { taskId: 1, items: [] });
+    });
+}
+
+test('completed normal deadline may skip incomplete items while interrupted platform blocks final payload', (t) => {
+    const f = fixture(t, run({ shops: [shop()], incompleteItems: [{ itemId: 22, platform: '1688', reason: '正常截止仍未报价' }] }));
+    const result = f.json('erp-items', f.path);
+    assert.deepEqual(result.skipItemIds, [22]);
+    assert.deepEqual(result.items.map((i) => i.itemId), [11]);
+    const value = JSON.parse(readFileSync(f.path, 'utf8'));
+    value.platformStates['1688'] = 'interrupted';
+    f.write('run.json', value);
+    assert.notEqual(f.cli('erp-items', f.path).status, 0);
+    value.platformStates = { '淘宝': 'completed' };
+    f.write('run.json', value);
+    assert.notEqual(f.cli('erp-items', f.path).status, 0);
+    value.platformStates['1688'] = 'running';
+    f.write('run.json', value);
+    assert.notEqual(f.cli('erp-items', f.path).status, 0);
+});
+
+test('merge cannot automatically clear a stop flag on later completed snapshots', (t) => {
+    const f = fixture(t, run({ stopAfterTask: true }));
+    f.write('run-淘宝.json', part());
+    f.write('run-1688.json', part('1688'));
+    f.ok('merge', f.dir);
+    assert.equal(JSON.parse(readFileSync(f.path, 'utf8')).stopAfterTask, true);
+    assert.notEqual(f.cli('erp-items', f.path).status, 0);
+});
+
+test('checkpoint and resume commands preserve existing config, settings and unrelated business records', (t) => {
+    const f = fixture(t);
+    const data = join(f.home, '.zhul-trade-sourcing');
+    mkdirSync(data);
+    const contents = { 'config.json': '{"erpUrl":"https://existing.invalid/custom"}\n', 'settings.json': '{"dedupeDays":14}\n', 'records.jsonl': '{"task":"OTHER","model":"OLD","time":"2020-01-01T00:00:00Z"}\n', 'processed-tasks.jsonl': '{"task":"OTHER","result":"manual"}\n' };
+    for (const [name, value] of Object.entries(contents)) writeFileSync(join(data, name), value);
+    const created = f.json('open-run', 'IQ-SAFE');
+    f.json('open-run', 'IQ-SAFE');
+    f.json('next', 'IQ-SAFE');
+    assert.equal(created.resumed, false);
+    for (const [name, value] of Object.entries(contents)) assert.equal(readFileSync(join(data, name), 'utf8'), value);
+});
+
+test('recent uses the latest archived correction without reviving old prices or extending reused windows', (t) => {
+    const f = fixture(t, run({ shops: [shop({ status: '未回复', quotes: [] })] }));
+    f.ok('finish', f.path);
+    assert.equal(f.json('recent', 'model-a')[0].price, '');
+    const value = JSON.parse(readFileSync(f.path, 'utf8'));
+    value.shops[0].status = '已回复';
+    value.shops[0].quotes = [quote(11, { price: 120 })];
+    f.write('run.json', value);
+    f.ok('finish', f.path);
+    assert.deepEqual(f.json('recent', 'MODEL-A').map((r) => r.price), ['120']);
+    value.shops[0].quotes[0].price = 125;
+    f.write('run.json', value);
+    f.ok('finish', f.path);
+    assert.deepEqual(f.json('recent', 'MODEL-A').map((r) => r.price), ['125']);
+    value.shops[0].quotes = [];
+    value.shops[0].status = '无货';
+    f.write('run.json', value);
+    f.ok('finish', f.path);
+    assert.deepEqual(f.json('recent', 'MODEL-A').map((r) => r.price), ['无货']);
+    value.shops[0].status = '未回复';
+    value.shops[0].endReason = '前价作废待确认';
+    f.write('run.json', value);
+    f.ok('finish', f.path);
+    assert.deepEqual(f.json('recent', 'MODEL-A').map((r) => r.price), ['']);
+    value.shops[0].status = '已回复';
+    value.shops[0].quotes = [quote(11, { price: 130 })];
+    value.shops[0].reusedFrom = ago(60 * 24 * 10);
+    f.write('run.json', value);
+    f.ok('finish', f.path);
+    assert.deepEqual(f.json('recent', 'MODEL-A', '1'), []);
+    const historical = f.json('recent', 'MODEL-A', '30');
+    assert.equal(historical.length, 1);
+    assert.equal(historical[0].time, value.shops[0].reusedFrom);
+    assert.equal(historical[0].price, '130');
+});
+
+test('failed atomic replacement keeps the previous checkpoint intact', (t) => {
+    const f = fixture(t);
+    f.write('run-淘宝.json', part('淘宝', { shops: [shop()] }));
+    f.write('run-1688.json', part('1688'));
+    const before = readFileSync(f.path, 'utf8');
+    const injection = `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module'; fs.renameSync = () => { throw new Error('test rename failure'); }; syncBuiltinESMExports();`;
+    const result = spawnSync(process.execPath, ['--import', 'data:text/javascript,' + encodeURIComponent(injection), script, 'merge', f.dir], { encoding: 'utf8', timeout: 5000, env: { ...process.env, HOME: f.home, USERPROFILE: f.home } });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /test rename failure/);
+    assert.equal(readFileSync(f.path, 'utf8'), before);
+});
+
+test('explicit no-write confirmation can retry and rearming the intent prevents duplicate payloads', (t) => {
+    const attempt = { state: 'not_sent', at: now(), writeAttempted: false };
+    const value = run({ shops: [shop()], submissionAttempt: attempt });
+    const f = fixture(t, value);
+    assert.equal(f.json('erp-items', f.path).items[0].quotes[0].unitPrice, 100);
+    assert.deepEqual(JSON.parse(readFileSync(f.path, 'utf8')).submissionAttempt, attempt);
+    value.submissionAttempt = { state: 'pending', at: now() };
+    f.write('run.json', value);
+    assert.notEqual(f.cli('erp-items', f.path).status, 0);
+    value.submissionAttempt = { state: 'not_sent', at: now() };
+    f.write('run.json', value);
+    assert.notEqual(f.cli('erp-items', f.path).status, 0);
+    value.submissionAttempt.writeAttempted = true;
+    f.write('run.json', value);
+    assert.notEqual(f.cli('erp-items', f.path).status, 0);
+});
+
+test('watch waits for the other platform after one interruption and then reports interruption', (t) => {
+    const f = fixture(t);
+    f.write('run-淘宝.json', part('淘宝', { status: 'interrupted', stages: {}, interruption: { reason: '等待人工恢复' } }));
+    f.write('run-1688.json', part('1688', { status: 'running', stages: {} }));
+    const preload = 'data:text/javascript,globalThis.setInterval%3D((original)%3D%3E(fn%2Cms)%3D%3Eoriginal(fn%2C10))(globalThis.setInterval)';
+    const background = (timeout) => spawnSync(process.execPath, ['--import', preload, script, 'watch', f.dir], { encoding: 'utf8', timeout, env: { ...process.env, HOME: f.home, USERPROFILE: f.home } });
+    const running = background(300);
+    assert.equal(running.error?.code, 'ETIMEDOUT');
+    assert.equal(running.stdout, '');
+    f.write('run-1688.json', part('1688', { status: 'completed' }));
+    const ended = background(3000);
+    assert.equal(ended.status, 0, ended.stderr);
+    assert.equal(JSON.parse(ended.stdout).result, 'interrupted');
+    assert.equal(JSON.parse(ended.stdout).stopAfterTask, true);
+});
+
+test('resume refuses corrupt platform records without replacing the run', (t) => {
+    const f = fixture(t);
+    const dir = f.ok('new-run', 'IQ-BAD-PART').trim();
+    writeFileSync(join(dir, 'run.json'), JSON.stringify(run({ task: 'IQ-BAD-PART' })));
+    writeFileSync(join(dir, 'run-淘宝.json'), '{');
+    const before = readFileSync(join(dir, 'run.json'), 'utf8');
+    assert.notEqual(f.cli('open-run', 'IQ-BAD-PART').status, 0);
+    assert.notEqual(f.cli('next', 'IQ-BAD-PART').status, 0);
+    assert.equal(readFileSync(join(dir, 'run.json'), 'utf8'), before);
 });

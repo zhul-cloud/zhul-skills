@@ -1,6 +1,6 @@
 # 淘宝操作说明
 
-本页页面定位与现象最近核对日期 2026-10-15；标「未实测」的条目仍是推定做法，首次照做时要核对结果，验证后去掉标记。淘宝改版后某条失效时，按实际情况操作，并在本机经验文件里记下（见 [run-protocol.md「本机经验」](../references/run-protocol.md#本机经验)）。
+本页页面定位与页面现象最近核对日期为 2026-10-15；标「未实测」的条目是按已核对页面行为推定的做法，首次照做时要核对结果，验证后去掉标记。淘宝改版后某条失效时，按实际情况操作，并在本机经验文件里记下（见 [run-protocol.md「本机经验」](../references/run-protocol.md#本机经验)）。
 
 技能自带的站点脚本在 `<技能目录>/helpers/`，由 `records.mjs install-helpers` 装进 BrowserOS neo。不发消息、不提交；搜索和预览只读，`imOpenAndRead` 会点开目标会话并清除未读状态。
 
@@ -8,11 +8,13 @@
 |---|---|---|
 | s.taobao.com | `searchCandidates(browser, pageId, model)` | 搜索结果第一页的精简候选：`[排名, 商品ID, 标价, 付款人数, 型号匹配, 疑似非全新, 广告]` |
 | market.m.taobao.com | `imPreviews(browser, pageId, keys)` | 会话列表里名称包含 `keys` 的会话预览（名称、时间、最后一条、未读数），不点开 |
-| market.m.taobao.com | `imOpenAndRead(browser, pageId, key)` | 点开名称包含 `key` 的会话，核对聊天区标题，启发式抽取会话末尾最多 1500 字符，可能缺旧消息 |
+| market.m.taobao.com | `imOpenAndRead(browser, pageId, key)` | 点开名称包含 `key` 的会话，核对聊天区标题，基于页面文本启发式抽取会话末尾最多 1500 字符，可能缺旧消息 |
 
 站点脚本只在 `run` 开始时、按当时已打开页面的域名加载：先打开搜索页或聊天页，**下一次** `run` 才能调用对应脚本。
 
 **聊天页上的脚本要手动加载**：BrowserOS 只给本代理名下的标签页加载脚本。点「客服」打开的聊天页在 BrowserOS 里显示为用户的标签页，在这类页面上直接调用 `helpers.imPreviews`、`helpers.imOpenAndRead` 会报 `not a function`。改用下面的方法（已实测可用）：用 `page.readHelper("imPreviews")` 读出脚本，只取其中 ```js 代码块，用 `(0, eval)("(" + 代码 + ")")` 得到函数，再按 `fn(browser, pageId, 参数)` 调用。
+
+所有登录、验证码、账号设置等人工协助统一按 [执行协议「暂停与恢复」](../references/execution.md#暂停与恢复)申请并消费 BrowserOS 人助；只中断受影响平台，不能记成无货。每次发送含更正先保存意图，读回确认后落盘；结果未知先查聊天证据。恢复先读停止期间的新回复，不重问已完成平台或真正业务结束的店。
 
 ## 1 登录
 
@@ -57,7 +59,7 @@
 
 ## 6 查看回复
 
-- 用 `imPreviews` 看这几家的预览；预览变了，用 `imOpenAndRead` 点开读末尾消息；证据不足时另行只读核对完整会话。
+- 用 `imPreviews` 看这几家的预览；预览变了，用 `imOpenAndRead` 点开读取末尾消息；恢复、未知发送或完整报价证据不足时另行只读核对对应会话，不能把截取缺失当成未发或无报价。
 - **只看预览不会把消息标为已读**，未读红点会一直留着，用户会以为 AI 漏看了。读到回复后，必须点开该会话一次。
 - 会话列表显示店名，聊天对象常是客服子账号（如 `tb485899055`、「yeshiwu:五佳电气批发」）。`run.json` 的 `contact` 记会话列表上显示的名字。
 - 读整页文字时会带出账号的其他私人会话预览：只解析目标店铺的会话，其他内容不解析、不记录。

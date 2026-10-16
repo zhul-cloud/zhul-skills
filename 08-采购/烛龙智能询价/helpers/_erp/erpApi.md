@@ -16,14 +16,17 @@ Call it:
 `helpers["erpApi"](browser, pageId, { op: "task", taskId: 1 })`
 
 - `pageId`：任意一个已登录 ERP 的标签页（同一个 ERP 地址）。脚本只在页面里取令牌、发请求，不点页面，也不返回令牌。
-- `op`：`ping`（检查登录）、`list`（`done`: true 已回价 / false 待处理）、`task`（`taskId`；读任务，返回可直接写进 run.json 的内容）、`save`（`taskId`、`items`、`submit`: false 存草稿 / true 提交回价）、`verify`（`taskId`、`items`、`submitted`: 是否已提交；逐条核对）。`items` 由 `records.mjs erp-items` 生成。
+- `op`：`ping`（检查登录）、`list`（`done`: true 已回价 / false 待处理）、`task`（`taskId`；读任务，返回可直接写进 run.json 的内容及 `snapshot`）、`snapshot`（`taskId`；只读任务与报价快照）、`save`（`taskId`、`items`、必传 `expectedSnapshot`、`submit`: false 存草稿 / true 提交回价）、`verify`（`taskId`、`items`、`submitted`: 是否已提交；逐条核对）。`items` 由 `records.mjs erp-items` 生成。
+- `expectedSnapshot` 是首次读取或上次成功核对后持久化的 `snapshot`，不能在恢复时直接用新读快照替换旧基线。每次 `save` 重新读回 ERP，对所有实际写入的型号比较已知报价字段、状态和附件 ID（含提交时自动带入的其他草稿）；变化返回 `ERP_CONFLICT`，不发 PUT。快照没有令牌、附件 URL 或其他未知字段。GET 与 PUT 不是原子事务，主代理必须单一串行写入，ERP 缺少版本条件接口时仍不能排除二者之间的人工修改。
+- `save` 的正常返回都含 `writeAttempted`：进入业务 PUT 调用前的失败为 `false`，进入调用后的成功或错误为 `true`（不表示写入成功）。只有明确返回 `false` 才能按原错误重试边界修复后重试；抛出、中断或没有回包仍属结果未知，只读核对，不推断为 `false`。
 - `save` / `verify` 同时传 `erp-items` 输出的 `skipItemIds`（不传按空数组）：因询价故障且无有效报价而排除的型号 ID，必须属于本任务、不重复且不与 `items` 重叠。提交时这些型号的原草稿保留原状，其余型号的草稿照常一并提交；核对只检查 `items`。
 - 返回 `{ ok: true, ... }`；出错返回 `{ ok: false, error, ... }`：
-  - `ERP_CONTRACT`：接口结构和下面 CONTRACT 记录的不一致（缺字段、类型变了、取值不认识、接口不存在）。**立即停止任务**，提示「ERP 接口已修改，烛龙智能询价没有同步，请更新技能」，把 `problems` 写进实跑报告。
+  - `ERP_CONTRACT`：接口结构和下面 CONTRACT 记录的不一致（缺字段、类型变了、取值不认识、接口不存在）。停止 ERP 调用，按 [ERP 错误与重试边界](../../references/erp-api.md#erp-错误与重试边界)保存可独立完成的平台本地结果，本轮不取下一 IQ；提示「ERP 接口已修改，烛龙智能询价没有同步，请更新技能」，把 `problems` 写进实跑报告。
   - `ERP_LOGIN`：没登录或登录已过期且无法续期，请用户在 BrowserOS neo 里重新登录 ERP（建议勾选「记住我」）。
-  - `ERP_BIZ`：ERP 拒绝了这次请求（如「货期不在可选值内」），仅正式提交前草稿可按 message 改正；提交已执行或结果未知只读核对并转人工，不重复 submit。
-  - `ERP_HTTP`：网络或服务器错误、ERP 标签页不可用，最多重试一次；提交已执行或未知时仅重试只读核对；仍失败按 [ERP 重试边界](../../references/erp-api.md#erp-错误与重试边界)转人工。
-  - `SKILL_INPUT`：技能传进来的内容不对（如型号不在任务里、货况文字不认识），本次输入未进入业务 PUT；仅正式提交前草稿可改正重试，此前提交已执行或未知时只读核对，不重复 submit。
+  - `ERP_BIZ`：ERP 拒绝了这次请求（如「货期不在可选值内」），草稿阶段可按 `message` 改正；正式提交已发出或结果未知时仅核对原 payload，不重提，仅明确 `writeAttempted:false` 可按 [ERP 重试边界](../../references/erp-api.md#erp-错误与重试边界)修复后以原 payload 重试。
+  - `ERP_CONFLICT`：ERP 与持久化基线不同；保留当前 ERP，不自动换新基线重试，读回差异并转人工核对。
+  - `ERP_HTTP`：网络或服务器错误、ERP 标签页不可用，只读或未正式提交的草稿阶段稍等后最多重试一次；正式提交已发出或结果未知时只重试只读核对，不重复提交；仍失败按 [ERP 错误与重试边界](../../references/erp-api.md#erp-错误与重试边界)转人工。
+  - `SKILL_INPUT`：技能传进来的内容不对（如型号不在任务里、货况文字不认识），本次输入未进入业务 PUT 写入；草稿阶段按协议改正，正式提交仅明确 `writeAttempted:false` 的 not_sent 可修复后用原 payload 重试；此前已发或未知尝试仍只读核对，不因本次错误重提。
 - ERP 新增的字段不算错误，在返回的 `extraFields` 里列出，写进实跑报告即可。
 
 ```js
@@ -239,6 +242,22 @@ async (browser, pageId, req) => {
 
   const extras = () => [...extraFields];
   const op = req && req.op;
+  // 仅返回业务字段；排序不影响快照比较，附件只保留 ID。
+  const quoteFields = ['id', 'channel', 'shopName', 'supplierId', 'unitPrice', 'taxIncluded', 'taxRate',
+    'itemCondition', 'leadTime', 'note', 'noStock', 'freeShipping', 'recommended', 'status'];
+  const quoteSnapshot = (q, stored) => ({ ...Object.fromEntries(quoteFields.map((k) => [k, q[k] ?? null])),
+    attachmentIds: [...(stored ? q.attachmentIds : (q.attachments || []).map((a) => a.id))].sort((a, b) => a - b) });
+  const itemSnapshot = (i, stored = false) => ({ itemId: stored ? i.itemId : i.id, model: i.model, locked: !!i.locked,
+    quotes: i.quotes.map((q) => quoteSnapshot(q, stored)).sort((a, b) => a.id - b.id) });
+  const snapshotOf = (data) => ({ taskId: data.task.id, task: data.task.taskCode,
+    reviewRequired: !!data.reviewRequired, editable: data.task.editable !== false,
+    items: data.items.map((i) => itemSnapshot(i)).sort((a, b) => a.itemId - b.itemId) });
+
+  if (op === 'snapshot') {
+    const r = await loadTask(req.taskId);
+    return r.fail || { ok: true, snapshot: snapshotOf(r.data), extraFields: extras() };
+  }
+
   if (op === 'ping') {
     const r = await call('list', { query: { done: false } });
     return r.fail || { ok: true, pending: r.data.length, extraFields: extras() };
@@ -270,7 +289,7 @@ async (browser, pageId, req) => {
         description: i.description ?? '', script: i.inquiryScript, links: links(i.searchKeywords),
         existingQuotes: i.quotes.map((q) => statusName(q.status)) })),
       lockedItems: items.filter((i) => i.locked).map((i) => ({ itemId: i.id, model: i.model, reason: '已报给客户' })),
-    }, extraFields: extras() };
+    }, snapshot: snapshotOf(r.data), extraFields: extras() };
   }
 
   // ----- 把技能整理的报价（文字取值）换成 ERP 码值，并带上本人原有的报价行 -----
@@ -337,10 +356,19 @@ async (browser, pageId, req) => {
   };
 
   if (op === 'save') {
+    const notSent = (result) => ({ ...result, writeAttempted: false });
+    const snapshotProblems = [];
+    const quoteSpec = CONTRACT.endpoints.detail.data.items[0].quotes[0];
+    check(req.expectedSnapshot, { taskId: 'number', task: 'string', reviewRequired: 'boolean', editable: 'boolean',
+      items: [{ itemId: 'number', model: 'string', locked: 'boolean', quotes: [{
+        ...Object.fromEntries(quoteFields.map((k) => [k, quoteSpec[k]])), attachmentIds: ['number'] }] }] },
+      'expectedSnapshot', snapshotProblems);
+    if (snapshotProblems.length) return notSent({ ok: false, error: 'SKILL_INPUT', problems: snapshotProblems,
+      hint: 'save 必须携带首次读取或上次成功核对后持久化的完整 snapshot' });
     const d = await loadDicts();
-    if (d.fail) return d.fail;
+    if (d.fail) return notSent(d.fail);
     const r = await loadTask(req.taskId);
-    if (r.fail) return r.fail;
+    if (r.fail) return notSent(r.fail);
     const review = !!r.data.reviewRequired;
     const byId = new Map(r.data.items.map((i) => [i.id, i]));
     const problems = [];
@@ -366,7 +394,7 @@ async (browser, pageId, req) => {
       if (quotes.length) body.items.push({ itemId: item.id, quotes });
       else if (it.noStock) body.items.push({ itemId: item.id, noStock: true, noStockNote: String(it.noStockNote || '').slice(0, 300), quotes: [] });
     }
-    if (problems.length) return { ok: false, error: 'SKILL_INPUT', problems, hint: '技能整理的报价取值不对，改正 run.json 后重试' };
+    if (problems.length) return notSent({ ok: false, error: 'SKILL_INPUT', problems, hint: '技能整理的报价取值不对，改正 run.json 后重试' });
     // 提交时，本人在其他型号上的草稿也一并提交；故障无价而显式排除的型号保留原状
     if (body.submit) {
       for (const item of r.data.items) {
@@ -378,13 +406,29 @@ async (browser, pageId, req) => {
           : { itemId: item.id, quotes: keptQuotes(item, keepStatuses(true, review), new Set(), review) });
       }
     }
-    if (!body.items.length) return { ok: false, error: 'SKILL_INPUT', problems: [{ path: 'items', expected: '至少一个型号有报价或无货', actual: 'empty' }] };
+    if (!body.items.length) return notSent({ ok: false, error: 'SKILL_INPUT', problems: [{ path: 'items', expected: '至少一个型号有报价或无货', actual: 'empty' }] });
     const bodyProblems = [];
     check(body, CONTRACT.endpoints.save.body, 'save.body', bodyProblems);
-    if (bodyProblems.length) return { ok: false, error: 'SKILL_INPUT', problems: bodyProblems };
+    if (bodyProblems.length) return notSent({ ok: false, error: 'SKILL_INPUT', problems: bodyProblems });
+    const current = snapshotOf(r.data);
+    const expected = req.expectedSnapshot;
+    const conflicts = [];
+    for (const field of ['taskId', 'task', 'reviewRequired', 'editable']) {
+      if (expected[field] !== current[field]) conflicts.push({ path: `snapshot.${field}`, problem: '任务信息与持久化基线不同' });
+    }
+    const expectedById = new Map(expected.items.map((i) => [i.itemId, i]));
+    for (const it of body.items) {
+      const before = expectedById.get(it.itemId);
+      const now = current.items.find((i) => i.itemId === it.itemId);
+      if (!before || JSON.stringify(itemSnapshot(before, true)) !== JSON.stringify(now)) {
+        conflicts.push({ itemId: it.itemId, problem: '报价、状态或附件与持久化基线不同' });
+      }
+    }
+    if (conflicts.length) return notSent({ ok: false, error: 'ERP_CONFLICT', conflicts,
+      hint: '保留当前 ERP；读回差异并转人工核对，不自动换新基线重试' });
     const s = await call('save', { pathParams: { taskId: req.taskId }, body });
-    if (s.fail) return s.fail;
-    return { ok: true, submit: body.submit, reviewRequired: review, items: body.items.map((i) => ({ itemId: i.itemId, quotes: i.quotes.length, noStock: !!i.noStock })), extraFields: extras() };
+    if (s.fail) return { ...s.fail, writeAttempted: true };
+    return { ok: true, writeAttempted: true, submit: body.submit, reviewRequired: review, items: body.items.map((i) => ({ itemId: i.itemId, quotes: i.quotes.length, noStock: !!i.noStock })), extraFields: extras() };
   }
 
   if (op === 'verify') {
@@ -433,11 +477,11 @@ async (browser, pageId, req) => {
     const pending = await call('list', { query: { done: false } });
     if (pending.fail) return pending.fail;
     const row = [...done.data, ...pending.data].find((t) => t.id === Number(req.taskId));
-    return { ok: mismatches.length === 0, mismatches, reviewRequired: review,
+    return { ok: mismatches.length === 0, mismatches, reviewRequired: review, snapshot: snapshotOf(r.data),
       inDoneList: done.data.some((t) => t.id === Number(req.taskId)), filledCount: row ? row.filledCount : null,
       itemCount: row ? row.itemCount : null, extraFields: extras() };
   }
 
-  return { ok: false, error: 'SKILL_INPUT', problems: [{ path: 'op', expected: 'ping/list/task/save/verify', actual: op }] };
+  return { ok: false, error: 'SKILL_INPUT', problems: [{ path: 'op', expected: 'ping/list/task/snapshot/save/verify', actual: op }] };
 }
 ```

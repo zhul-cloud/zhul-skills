@@ -26,6 +26,7 @@ function makeEnv(state) {
     if (url === '/api/v1/auth/refresh') return state.refreshOk ? reply(200, { code: 0, data: { accessToken: 'T2' } }) : reply(401, { code: 401 });
     const auth = (opts.headers || {}).Authorization;
     if (state.expireT1 && auth === 'Bearer T1') return reply(401, { code: 401, message: 'expired' });
+    if (method === 'PUT' && state.putNetworkError) throw new Error('mock PUT network unavailable');
     if (state.networkError) throw new Error('mock network unavailable');
     if (state.httpReply) return { status: state.httpReply.http, text: async () => state.httpReply.text };
     if (state.http404 && url.startsWith('/api/v1/inquiry/my-tasks/')) return reply(404, {});
@@ -40,6 +41,7 @@ function makeEnv(state) {
       return reply(200, { code: 0, message: 'ok', data: done === !!state.done ? [{ id: 1, taskCode: 'IQT', itemCount: 2, filledCount: state.filled ?? 0, status: 2, newField: 1 }] : [] });
     }
     if (method === 'PUT') { state.lastPut = JSON.parse(opts.body); return reply(200, state.putReply || { code: 0, message: 'ok' }); }
+    if (state.detailReply) return reply(state.detailReply.http, state.detailReply.json);
     const detail = JSON.parse(JSON.stringify(state.detail));
     return reply(200, { code: 0, message: 'ok', data: detail });
   };
@@ -69,12 +71,21 @@ const baseDetail = (quotes1 = [], quotes2 = [], review = true, extra = {}) => ({
 });
 const fresh = [{ itemId: 1, quotes: [{ channel: '淘宝', shopName: '店B', unitPrice: 120.456, taxIncluded: true, taxRate: 13, condition: '', leadTime: '3-5天', note: '新' }] }];
 const results = [];
+const readSnapshot = async (detail) => erpApi(makeEnv({ detail }).browser, 1, { op: 'snapshot', taskId: 1 });
 const t = async (name, state, req, check) => {
   const env = makeEnv(state);
   let out;
-  try { out = await erpApi(env.browser, 1, req); } catch (e) { out = { thrown: String(e) }; }
+  try {
+    if (req.op === 'save' && !Object.hasOwn(req, 'expectedSnapshot')) {
+      // 旧用例共用首次读取的基线；结构错误用例模拟读取后 ERP 契约发生变化。
+      let initial = await readSnapshot(state.detail || baseDetail());
+      if (!initial.ok) initial = await readSnapshot(baseDetail());
+      req = { ...req, expectedSnapshot: initial.snapshot };
+    }
+    out = await erpApi(env.browser, 1, req);
+  } catch (e) { out = { thrown: String(e) }; }
   let pass = false;
-  try { pass = check(out, state, env); } catch (e) { pass = false; out.checkError = String(e); }
+  try { pass = check(out, state, env) && (req.op !== 'save' || typeof out.writeAttempted === 'boolean'); } catch (e) { pass = false; out.checkError = String(e); }
   results.push({ name, pass, ...(pass ? {} : { out: JSON.stringify(out).slice(0, 600), put: JSON.stringify(state.lastPut || null).slice(0, 600) }) });
 };
 
@@ -214,6 +225,90 @@ await t('verify允许排除型号保留未提交草稿', { detail: baseDetail(li
 await t('全空items且排除旧草稿不发PUT', { detail: baseDetail([], [q({ status: 1, noStock: true })]) },
   { op: 'save', taskId: 1, submit: true, items: [], skipItemIds: [2] },
   (o, s) => o.error === 'SKILL_INPUT' && !s.lastPut);
+
+// 18. 恢复用只读业务快照；保存必须使用持久化基线，不以当前读取覆盖外部变动。
+const snapshotDetail = baseDetail([q({ id: 201, supplierId: 88, status: 1, attachments: [{ id: 12, url: 'secret-url' }, { id: 11 }], accessToken: 'secret-token', attachmentIds: 'secret-unknown-field' }),
+  q({ id: 202, status: 2 }), q({ id: 203, status: 3, noStock: true, unitPrice: undefined })]);
+snapshotDetail.items[1].locked = true;
+snapshotDetail.items[0].itemId = 999;
+await t('snapshot返回草稿/已提交/待审核业务字段与附件ID，忽略未知敏感值', { detail: snapshotDetail },
+  { op: 'snapshot', taskId: 1 }, (o, s, env) => o.ok && o.snapshot.taskId === 1 && o.snapshot.items[1].locked
+    && o.snapshot.items[0].quotes[0].supplierId === 88 && o.snapshot.items[0].quotes[2].unitPrice === null
+    && JSON.stringify(o.snapshot.items[0].quotes.map((x) => x.status)) === '[1,2,3]'
+    && JSON.stringify(o.snapshot.items[0].quotes[0].attachmentIds) === '[11,12]'
+    && !JSON.stringify(o).includes('secret-') && !JSON.stringify(o).includes('T1')
+    && env.calls.length === 1 && env.calls[0].method === 'GET');
+await t('task同时提供兼容状态文字和完整snapshot', { detail: snapshotDetail }, { op: 'task', taskId: 1 },
+  (o) => o.ok && JSON.stringify(o.run.items[0].existingQuotes) === '["草稿","已提交","待审核"]' && o.snapshot.items[0].quotes[0].id === 201);
+for (const expectedSnapshot of [undefined, null, {}, { taskId: 1, items: [] }]) {
+  await t('缺失或不完整expectedSnapshot拒绝保存', { detail: baseDetail() },
+    { op: 'save', taskId: 1, submit: false, items: fresh, expectedSnapshot },
+    (o, s, env) => o.error === 'SKILL_INPUT' && o.problems[0].path.startsWith('expectedSnapshot') && !s.lastPut && env.calls.length === 0);
+}
+const beforeDetail = baseDetail([q({ id: 301, attachments: [{ id: 10 }] })], [q({ id: 302, shopName: '店X' })]);
+const persisted = (await readSnapshot(beforeDetail)).snapshot;
+const fieldChanges = { id: 999, channel: 2, shopName: '人工店名', supplierId: 5, unitPrice: 999, taxIncluded: true,
+  taxRate: 3, itemCondition: 2, leadTime: 2, note: '人工备注', noStock: true, freeShipping: false, recommended: true,
+  status: 2, attachments: [{ id: 99 }] };
+for (const [field, value] of Object.entries(fieldChanges)) {
+  const detail = structuredClone(beforeDetail);
+  detail.items[0].quotes[0][field] = value;
+  await t(`基线漂移${field}拒绝PUT`, { detail },
+    { op: 'save', taskId: 1, submit: false, items: fresh, expectedSnapshot: persisted },
+    (o, s) => o.error === 'ERP_CONFLICT' && o.conflicts.some((x) => x.itemId === 1) && !s.lastPut);
+}
+const changedOther = structuredClone(beforeDetail); changedOther.items[1].quotes[0].note = '人工改另一型号';
+await t('部分平台草稿仅检查实际写入型号，不标其他型号无货', { detail: changedOther },
+  { op: 'save', taskId: 1, submit: false, items: fresh, expectedSnapshot: persisted },
+  (o, s) => o.ok && s.lastPut.items.length === 1 && s.lastPut.items[0].itemId === 1 && !s.lastPut.items[0].noStock);
+await t('提交自动带入其他型号草稿也必须检查基线', { detail: changedOther },
+  { op: 'save', taskId: 1, submit: true, items: fresh, expectedSnapshot: persisted },
+  (o, s) => o.error === 'ERP_CONFLICT' && o.conflicts.some((x) => x.itemId === 2) && !s.lastPut);
+await t('显式排除其他型号仍保留其ERP修改', { detail: changedOther },
+  { op: 'save', taskId: 1, submit: true, items: fresh, skipItemIds: [2], expectedSnapshot: persisted },
+  (o, s) => o.ok && s.lastPut.items.length === 1);
+const deletedQuote = structuredClone(beforeDetail); deletedQuote.items[0].quotes = [];
+await t('人工删除报价也拒绝恢复覆盖', { detail: deletedQuote },
+  { op: 'save', taskId: 1, submit: false, items: fresh, expectedSnapshot: persisted },
+  (o, s) => o.error === 'ERP_CONFLICT' && !s.lastPut);
+for (const [field, value] of [['taskId', 9], ['task', 'OTHER'], ['reviewRequired', false], ['editable', false]]) {
+  await t(`任务基线${field}漂移拒绝PUT`, { detail: beforeDetail },
+    { op: 'save', taskId: 1, submit: false, items: fresh, expectedSnapshot: { ...persisted, [field]: value } },
+    (o, s) => o.error === 'ERP_CONFLICT' && o.conflicts.some((x) => x.path === `snapshot.${field}`) && !s.lastPut);
+}
+const reordered = structuredClone(beforeDetail);
+reordered.items.reverse(); reordered.items[1].quotes[0].attachments.push({ id: 9 });
+const orderBaseline = (await readSnapshot(reordered)).snapshot;
+reordered.items[1].quotes[0].attachments.reverse(); reordered.items[1].quotes[0].quotedAt = 'new-time';
+await t('型号附件顺序与非业务时间变化不误报冲突', { detail: reordered },
+  { op: 'save', taskId: 1, submit: false, items: fresh, expectedSnapshot: orderBaseline }, (o) => o.ok);
+await t('提交结果未知只verify，返回同次读回快照且无PUT', { detail: baseDetail(live), filled: 1 },
+  { op: 'verify', taskId: 1, submitted: true, items: fresh },
+  (o, s, env) => o.ok && o.snapshot.items[0].quotes[0].status === 3 && !s.lastPut && env.calls.every((c) => c.method === 'GET'));
+
+// 19. 只有明确未进入 PUT 的返回才允许修复后重试；进入 PUT 后即使报错也不推断未写入。
+const writeReq = { op: 'save', taskId: 1, submit: true, items: fresh };
+const noWrite = (o, s, env) => o.writeAttempted === false && !s.lastPut && !env.calls.some((c) => c.method === 'PUT');
+await t('GET字典登录失败writeAttempted=false且0PUT', { detail: baseDetail(), expireT1: true }, writeReq,
+  (o, s, env) => o.error === 'ERP_LOGIN' && noWrite(o, s, env));
+await t('GET详情登录失败writeAttempted=false且0PUT', { detail: baseDetail(), detailReply: { http: 401, json: { code: 401 } } }, writeReq,
+  (o, s, env) => o.error === 'ERP_LOGIN' && noWrite(o, s, env));
+for (const expectedSnapshot of [undefined, { ...persisted, taskId: '1' }]) {
+  await t('缺失或错类型snapshot为false且0PUT', { detail: baseDetail() }, { ...writeReq, expectedSnapshot },
+    (o, s, env) => o.error === 'SKILL_INPUT' && noWrite(o, s, env));
+}
+await t('过期snapshot冲突为false且0PUT', { detail: changedOther }, { ...writeReq, expectedSnapshot: persisted },
+  (o, s, env) => o.error === 'ERP_CONFLICT' && noWrite(o, s, env));
+await t('GET业务拒绝为false且0PUT', { detail: baseDetail(), detailReply: { http: 400, json: { code: 400, message: 'mock GET refused' } } }, writeReq,
+  (o, s, env) => o.error === 'ERP_BIZ' && noWrite(o, s, env));
+await t('PUT网络失败writeAttempted=true', { detail: baseDetail(), putNetworkError: true }, writeReq,
+  (o, s, env) => o.error === 'ERP_HTTP' && o.writeAttempted === true && env.calls.filter((c) => c.method === 'PUT').length === 1);
+await t('PUT业务拒绝writeAttempted=true', { detail: baseDetail(), putReply: { code: 400, message: 'mock PUT refused' } }, writeReq,
+  (o, s, env) => o.error === 'ERP_BIZ' && o.writeAttempted === true && env.calls.filter((c) => c.method === 'PUT').length === 1);
+await t('PUT响应契约错误writeAttempted=true', { detail: baseDetail(), putReply: { message: 'missing code' } }, writeReq,
+  (o, s, env) => o.error === 'ERP_CONTRACT' && o.writeAttempted === true && env.calls.filter((c) => c.method === 'PUT').length === 1);
+await t('PUT成功writeAttempted=true', { detail: baseDetail() }, writeReq,
+  (o, s, env) => o.ok && o.writeAttempted === true && env.calls.filter((c) => c.method === 'PUT').length === 1);
 
 for (const r of results) console.log(`${r.pass ? 'PASS' : 'FAIL'}  ${r.name}${r.pass ? '' : '\n      ' + r.out + '\n      put=' + r.put}`);
 const passed = results.filter((r) => r.pass).length;
