@@ -4,7 +4,8 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 const md = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'helpers', '_erp', 'erpApi.md'), 'utf8');
-const src = md.match(/```js\n([\s\S]*?)\n```/)[1];
+// 仓库在 Windows 上检出时是 CRLF 换行
+const src = md.match(/```js\r?\n([\s\S]*?)\r?\n```/)[1];
 const erpApi = (0, eval)('(' + src + ')');
 
 const DICTS = {

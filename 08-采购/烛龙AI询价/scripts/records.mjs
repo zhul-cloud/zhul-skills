@@ -5,6 +5,8 @@
 //   node records.mjs new-run <任务编号>           新建本次任务文件夹，输出路径
 //   node records.mjs recent <型号> [天数]         查询该型号近 N 天问过的店家（防止重复询价），天数默认取 settings.json 的 dedupeDays
 //   node records.mjs processed <任务编号>         查询该任务是否已在本机提交过回价
+//   node records.mjs next <任务编号...>           按给出的顺序，返回第一个本机还没提交过回价、也没跳过过的任务
+//   node records.mjs skip <任务编号> <原因>       把任务记为跳过（如询盘已取消、已回过价），next 不再选中它
 //   node records.mjs merge <本次目录>             把子代理写的各平台记录 run-<平台>.json 合并进 run.json
 //   node records.mjs erp-items <run.json>         把 run.json 里的报价整理成 ERP 接口脚本 erpApi 的 save / verify 输入
 //   node records.mjs finish <run.json>            写入询价记录，并把任务记为已处理
@@ -194,6 +196,24 @@ function processed(taskCode) {
     console.log(JSON.stringify({ task: taskCode, processed: history.some((r) => r.result === 'submitted'), history }, null, 2));
 }
 
+/** 连续处理任务时取下一个：按「待处理」列表的顺序，跳过本机已提交过回价的和记为跳过的 */
+function next(taskCodes) {
+    const reasonOf = new Map();
+    for (const r of readJsonl(PROCESSED)) {
+        if (r.result === 'submitted') reasonOf.set(r.task, '本机已提交过回价');
+        else if (r.result === 'skipped' && !reasonOf.has(r.task)) reasonOf.set(r.task, `已跳过：${r.reason ?? ''}`);
+    }
+    const skipped = taskCodes.filter((t) => reasonOf.has(t)).map((task) => ({ task, reason: reasonOf.get(task) }));
+    console.log(JSON.stringify({ next: taskCodes.find((t) => !reasonOf.has(t)) ?? null, skipped }, null, 2));
+}
+
+/** 把任务记为跳过（询盘已取消、已在别处回过价），连续处理时 next 不再选中它 */
+function skip(taskCode, reason) {
+    mkdirSync(DATA_DIR, { recursive: true });
+    appendFileSync(PROCESSED, JSON.stringify({ time: new Date().toISOString(), task: taskCode, result: 'skipped', reason }) + '\n');
+    console.log(`任务 ${taskCode} 已记为跳过：${reason}`);
+}
+
 function validateRun(run) {
     const problems = [];
     const ids = new Set((run.items ?? []).map((i) => String(i.itemId)));
@@ -362,6 +382,10 @@ try {
         recent(args[0], args[1]);
     } else if (cmd === 'processed' && args[0]) {
         processed(args[0]);
+    } else if (cmd === 'next') {
+        next(args);
+    } else if (cmd === 'skip' && args[0]) {
+        skip(args[0], args.slice(1).join(' ') || '未说明');
     } else if (cmd === 'merge' && args[0]) {
         merge(args[0]);
     } else if (cmd === 'erp-items' && args[0]) {
@@ -378,6 +402,8 @@ try {
             '  node records.mjs new-run <任务编号>',
             `  node records.mjs recent <型号> [天数=${SETTINGS.dedupeDays}]`,
             '  node records.mjs processed <任务编号>',
+            '  node records.mjs next <任务编号...>',
+            '  node records.mjs skip <任务编号> <原因>',
             '  node records.mjs merge <本次目录>',
             '  node records.mjs erp-items <run.json>',
             '  node records.mjs finish <run.json>',

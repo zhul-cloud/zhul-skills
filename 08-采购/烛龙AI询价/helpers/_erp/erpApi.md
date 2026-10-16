@@ -16,21 +16,24 @@ Call it:
 `helpers["erpApi"](browser, pageId, { op: "task", taskId: 1 })`
 
 - `pageId`：任意一个已登录 ERP 的标签页（同一个 ERP 地址）。脚本只在页面里取令牌、发请求，不点页面，也不返回令牌。
-- `op`：`ping`（检查登录）、`list`（`done`: true 已回价 / false 待处理）、`task`（读任务，返回可直接写进 run.json 的内容）、`save`（`submit`: false 存草稿 / true 提交回价）、`verify`（提交后逐条核对）。
+- `op`：`ping`（检查登录）、`list`（`done`: true 已回价 / false 待处理）、`task`（`taskId`；读任务，返回可直接写进 run.json 的内容）、`save`（`taskId`、`items`、`submit`: false 存草稿 / true 提交回价）、`verify`（`taskId`、`items`、`submitted`: 是否已提交；逐条核对）。`items` 由 `records.mjs erp-items` 生成。
 - 返回 `{ ok: true, ... }`；出错返回 `{ ok: false, error, ... }`：
   - `ERP_CONTRACT`：接口结构和下面 CONTRACT 记录的不一致（缺字段、类型变了、取值不认识、接口不存在）。**立即停止任务**，提示「ERP 接口已修改，烛龙AI询价没有同步，请更新技能」，把 `problems` 写进实跑报告。
   - `ERP_LOGIN`：没登录或登录已过期且无法续期，请用户在 BrowserOS neo 里重新登录 ERP（建议勾选「记住我」）。
   - `ERP_BIZ`：ERP 拒绝了这次请求（如「货期不在可选值内」），按 `message` 改正后重试。
-  - `ERP_HTTP`：网络或服务器错误，记下后停下汇报。
+  - `ERP_HTTP`：网络或服务器错误、ERP 标签页不可用，记下后停下汇报。
+  - `SKILL_INPUT`：技能传进来的内容不对（如型号不在任务里、货况文字不认识），没有发给 ERP；改正 run.json 后重试。
 - ERP 新增的字段不算错误，在返回的 `extraFields` 里列出，写进实跑报告即可。
 
 ```js
 async (browser, pageId, req) => {
-  // ===== 接口约定：核对时的 ERP 版本 zhul-trade-erp release/1.3.0（2026-10-16） =====
+  // ===== 接口约定 =====
+  // ERP 可能跑在本机、测试服务器或正式服务器上，部署的是哪个版本无法从接口读到，所以不按版本号判断，
+  // 而是每次请求都按下面的结构核对：对得上就能用，对不上就停。checkedAt 是这份约定最后一次对照 ERP 核对的日期。
   // 类型写法：'number' 'string' 'boolean'；末尾带 ? 表示可以没有（ERP 不返回空字段）；[x] 为数组；{...} 为对象。
   // 'any?' 是 ERP 有、技能不用的字段，列出来是为了分辨哪些字段是 ERP 新增的；'*' 表示这个对象的其他字段都不关心
   const CONTRACT = {
-    verifiedWith: 'zhul-trade-erp release/1.3.0（2026-10-16）',
+    checkedAt: '2026-10-16',
     // 所有接口的外层：code 为 0 表示成功
     envelope: { code: 'number', message: 'string?', data: 'any?' },
     endpoints: {
@@ -117,7 +120,7 @@ async (browser, pageId, req) => {
   };
 
   const contractError = (endpoint, problems) => ({ ok: false, error: 'ERP_CONTRACT', endpoint, problems,
-    verifiedWith: CONTRACT.verifiedWith, hint: 'ERP 接口已修改，烛龙AI询价没有同步，请更新技能' });
+    contractCheckedAt: CONTRACT.checkedAt, hint: 'ERP 接口已修改，烛龙AI询价没有同步，请更新技能' });
 
   // ----- 在 ERP 页面里发请求：令牌取自页面的登录状态，过期时按前端同样的方式续期；令牌不返回 -----
   // 页面通信出错（标签页关了、页面跳走等）时不抛出，按 ERP_HTTP 返回
