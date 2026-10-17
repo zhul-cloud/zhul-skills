@@ -2,7 +2,7 @@
 // 本地询价记录工具（零依赖，Node 18+）。数据目录固定为用户主目录下的 .zhul-trade-sourcing（Windows %USERPROFILE%\.zhul-trade-sourcing\，macOS/Linux ~/.zhul-trade-sourcing/）
 //   node records.mjs version                    只读本脚本所属技能的名称、版本和绝对目录，不初始化数据或读取业务设置
 //   node records.mjs init [--erp <ERP地址>]       创建数据目录；带 --erp 时保存 ERP 地址。输出当前配置
-//   node records.mjs install-helpers [--force]    把技能自带的站点脚本装进 BrowserOS neo；本机已有不同内容时默认不覆盖（ERP 接口脚本总是覆盖）
+//   node records.mjs install-helpers [--force]    维护者可选磁盘导出；需显式 BROWSEROS_HELPERS_DIR，copied 不等于 runtimeLoaded
 //   node records.mjs new-run <任务编号>           恢复唯一未提交 run；没有时新建，输出路径
 //   node records.mjs open-run <任务编号>          同 new-run，输出 JSON（恢复标志、已完成平台、ERP 核对提示）
 //   node records.mjs recent <型号> [天数]         查询该型号近 N 天问过的店家（防止重复询价），天数默认取有效配置的 dedupeDays
@@ -34,13 +34,8 @@ const PROCESSED = join(DATA_DIR, 'processed-tasks.jsonl');
 const RUNS = join(DATA_DIR, 'runs');
 const LEARNINGS = join(DATA_DIR, 'learnings');
 const REPORTS = join(DATA_DIR, 'reports');
-// BrowserOS neo 的站点脚本目录，按域名分文件夹。环境变量 BROWSEROS_HELPERS_DIR 可覆盖。
-// Windows 路径已实测；macOS、Linux 按 Chromium 用户数据目录的惯例推定，未实测，首次在这两种系统上运行时核对。
-const HELPERS_DIR = process.env.BROWSEROS_HELPERS_DIR || join(
-    process.platform === 'win32' ? join(process.env.LOCALAPPDATA ?? join(homedir(), 'AppData', 'Local'), 'BrowserClaw', 'User Data')
-        : process.platform === 'darwin' ? join(homedir(), 'Library', 'Application Support', 'BrowserClaw')
-            : join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'BrowserClaw'),
-    '.browseros', '.browserclaw', 'helpers');
+// 仅维护者显式选择的导出目录；普通运行用 page.saveHelper 注册，不推定 BrowserOS 磁盘位置。
+const HELPERS_DIR = process.env.BROWSEROS_HELPERS_DIR;
 
 const [cmd, ...args] = process.argv.slice(2);
 let SETTINGS;
@@ -97,26 +92,40 @@ function readJsonl(path) {
 }
 
 function init(args) {
+    let erpUrl;
+    if (args.length) {
+        if (args.length !== 2 || args[0] !== '--erp' || !args[1] || args[1].startsWith('--')) {
+            throw new Error('用法：init [--erp <ERP地址>]；--erp 需要 HTTP(S) 网址');
+        }
+        let url;
+        try { url = new URL(args[1]); } catch { throw new Error('ERP 地址必须是有效的 HTTP(S) 网址'); }
+        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+            throw new Error('ERP 地址必须是无凭据的 HTTP(S) 网址');
+        }
+        // 接口使用 /api 绝对路径；首页和任务深链接都规范化为 origin，保留非默认端口。
+        erpUrl = url.origin;
+    }
+    // 显式地址校验完成后才允许创建目录或写配置。
     mkdirSync(RUNS, { recursive: true });
     mkdirSync(LEARNINGS, { recursive: true });
     mkdirSync(REPORTS, { recursive: true });
     const config = readConfig();
-    const i = args.indexOf('--erp');
-    if (i >= 0 && args[i + 1]) {
-        config.erpUrl = args[i + 1].replace(/\/+$/, '');
+    if (erpUrl !== undefined) {
+        config.erpUrl = erpUrl;
         writeFileSync(CONFIG, JSON.stringify(config, null, 2));
     }
     console.log(JSON.stringify({ dataDir: DATA_DIR, erpUrl: config.erpUrl ?? null }, null, 2));
 }
 
 function installHelpers(args) {
+    if (args.some((arg) => arg !== '--force')) throw new Error('install-helpers 仅支持可选 --force；它只是磁盘导出，不注册运行时 helper');
     const force = args.includes('--force');
-    if (!existsSync(HELPERS_DIR)) {
-        console.error(`找不到 BrowserOS neo 的站点脚本目录：${HELPERS_DIR}\n请先启动一次 BrowserOS neo；装在其他位置时，用环境变量 BROWSEROS_HELPERS_DIR 指定该目录，或联系技能维护者。`);
-        process.exit(2);
+    if (!HELPERS_DIR || !existsSync(HELPERS_DIR)) {
+        throw new Error('install-helpers 仅供维护者导出文件，需要显式 BROWSEROS_HELPERS_DIR 指向已有目录。copied 不等于 runtimeLoaded；正式准备请按 references/browseros-setup.md 使用 page.saveHelper 注册并在下一次 run 验证。');
     }
     const src = join(SKILL_DIR, 'helpers');
-    const result = { installed: [], unchanged: [], kept: [] };
+    const result = { copied: [], unchanged: [], kept: [], runtimeLoaded: false,
+        note: '仅导出 Markdown 文件；copied 不等于 runtimeLoaded。须按 browseros-setup.md 生成适配源码、page.saveHelper 注册并在下一次 run 验证。' };
     for (const host of readdirSync(src).filter((h) => !h.startsWith('_'))) {
         for (const file of readdirSync(join(src, host)).filter((f) => f.endsWith('.md'))) {
             const from = join(src, host, file);
@@ -130,14 +139,14 @@ function installHelpers(args) {
             } else {
                 mkdirSync(dirname(to), { recursive: true });
                 copyFileSync(from, to);
-                result.installed.push(name);
+                result.copied.push(name);
             }
         }
     }
     // ERP 接口脚本：ERP 地址每台电脑不同，按 config.json 的 erpUrl 装进对应域名；接口约定以技能版本为准，总是覆盖
     const erpUrl = readConfig().erpUrl;
     if (!erpUrl) {
-        result.erp = '未配置 ERP 地址，先执行 init --erp <ERP地址>，再执行 install-helpers';
+        result.erp = '未配置 ERP 地址，本次仅导出电商文件；ERP 运行时注册按 browseros-setup.md 使用已有 erpUrl';
     } else {
         const host = new URL(erpUrl).hostname;
         const erpSrc = join(src, '_erp');
@@ -150,13 +159,13 @@ function installHelpers(args) {
             } else {
                 mkdirSync(dirname(to), { recursive: true });
                 writeFileSync(to, text);
-                result.installed.push(name);
+                result.copied.push(name);
             }
         }
     }
     console.log(JSON.stringify(result, null, 2));
     if (result.kept.length) {
-        console.log('kept 里的脚本本机已有不同内容，未覆盖。确认要换成技能自带版本时加 --force。');
+        console.error('kept 里的导出文件已有不同内容，未覆盖。维护者先比对、保留本地改进，明确选择替换后才加 --force；磁盘导出不代表运行时更新。');
     }
 }
 
@@ -311,7 +320,7 @@ function next(taskCodes) {
     const reasonOf = new Map();
     for (const r of readJsonl(PROCESSED)) {
         if (r.result === 'submitted') reasonOf.set(r.task, '本机已提交过回价');
-        else if (r.result === 'skipped' && !reasonOf.has(r.task)) reasonOf.set(r.task, `已跳过：${r.reason ?? ''}`);
+        else if (r.result === 'skipped' && reasonOf.get(r.task) !== '本机已提交过回价') reasonOf.set(r.task, `已跳过：${r.reason ?? ''}`);
         else if (r.result === 'manual' && !reasonOf.has(r.task)) reasonOf.set(r.task, `需人工处理：${r.reason ?? ''}`);
     }
     const skipped = [];

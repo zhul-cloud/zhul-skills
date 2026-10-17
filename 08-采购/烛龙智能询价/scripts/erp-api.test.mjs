@@ -3,10 +3,17 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runInNewContext } from 'node:vm';
 const md = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'helpers', '_erp', 'erpApi.md'), 'utf8');
 // 仓库在 Windows 上检出时是 CRLF 换行
 const src = md.match(/```js\r?\n([\s\S]*?)\r?\n```/)[1];
 const erpApi = (0, eval)('(' + src + ')');
+// 缩短真实计时常量，实际执行相同的 Promise/AbortController/finally 路径。
+const fastErpApi = (0, eval)('(' + src.replace('const OP_BUDGET_MS = 24_000;', 'const OP_BUDGET_MS = 250;')
+  .replace('const EVALUATE_MS = 9_000;', 'const EVALUATE_MS = 90;')
+  .replace('const REQUEST_MS = 8_000;', 'const REQUEST_MS = 50;')
+  .replace('const CLEANUP_MS = 500;', 'const CLEANUP_MS = 20;') + ')');
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const DICTS = {
   inquiry_item_condition: ['全新原装', '99新', '翻新', '二手', '拆机件', '国产替代', '待确认'],
@@ -22,6 +29,8 @@ function makeEnv(state) {
   const fetchMock = async (url, opts = {}) => {
     const method = opts.method || 'GET';
     calls.push({ method, url, body: opts.body ? JSON.parse(opts.body) : null });
+    const overridden = await state.fetchHook?.(url, opts);
+    if (overridden) return overridden;
     const reply = (http, json) => ({ status: http, text: async () => JSON.stringify(json), json: async () => json });
     if (url === '/api/v1/auth/refresh') {
       if (state.refreshError) throw new Error('mock refresh unavailable');
@@ -62,19 +71,36 @@ function makeEnv(state) {
     const detail = JSON.parse(JSON.stringify(state.detail));
     return reply(200, { code: 0, message: 'ok', data: detail });
   };
+  const timers = new Set();
+  const context = {
+    window: {}, Date, AbortController,
+    setTimeout: (callback, ms) => {
+      const timer = setTimeout(() => { timers.delete(timer); callback(); }, ms);
+      timers.add(timer);
+      return timer;
+    },
+    clearTimeout: (timer) => { timers.delete(timer); clearTimeout(timer); },
+    sessionStorage: { getItem: (k) => store.session[k] ?? null, setItem: (k, v) => { store.session[k] = v; } },
+    localStorage: { getItem: (k) => store.local[k] ?? null, setItem: (k, v) => { store.local[k] = v; } },
+    fetch: fetchMock,
+  };
+  const evaluations = [];
   const sandboxPage = {
     evaluate: async (fn, arg) => {
-      globalThis.window = globalThis.window || {};
-      globalThis.sessionStorage = { getItem: (k) => store.session[k] ?? null, setItem: (k, v) => { store.session[k] = v; } };
-      globalThis.localStorage = { getItem: (k) => store.local[k] ?? null, setItem: (k, v) => { store.local[k] = v; } };
-      globalThis.fetch = fetchMock;
-      const value = await fn(arg);
+      const stage = typeof arg === 'string' ? 'cleanup' : arg?.method ? 'request'
+        : arg?.part !== undefined ? 'upload' : arg?.n !== undefined ? 'download' : 'init';
+      evaluations.push({ stage, arg });
+      const override = await state.evaluateHook?.(stage, arg);
+      if (override) return override;
+      // 与当前 SDK 一致：函数不能捕获 helper 变量，第二参经过 JSON 序列化。
+      const pageArg = arg === undefined ? undefined : JSON.parse(JSON.stringify(arg));
+      const value = await runInNewContext(`(${fn})`, context)(pageArg);
       const size = Buffer.byteLength(JSON.stringify({ page: 1, value }) ?? '');
       if (size > 4000) return { page: 1, path: 'x.txt', writtenToFile: true, contentLength: size };
       return { page: 1, value };
     },
   };
-  return { browser: { page: () => sandboxPage }, store, calls };
+  return { browser: { page: () => sandboxPage }, store, calls, evaluations, context, timers };
 }
 
 const q = (o) => ({ id: Math.floor(Math.random() * 1e6), channel: 1, shopName: '店A', unitPrice: 100, taxIncluded: false, itemCondition: 1, leadTime: 1, note: 'n', noStock: false, freeShipping: true, status: 1, attachments: [], ...o });
@@ -88,6 +114,25 @@ const baseDetail = (quotes1 = [], quotes2 = [], review = true, extra = {}) => ({
 });
 const fresh = [{ itemId: 1, quotes: [{ channel: '淘宝', shopName: '店B', unitPrice: 120.456, taxIncluded: true, taxRate: 13, condition: '', leadTime: '3-5天', note: '新' }] }];
 const results = [];
+// 写入/核对模式必须在取得页面句柄前校验，不能把字符串 "false" 当作正式提交。
+for (const op of ['save', 'verify']) {
+  const field = op === 'save' ? 'submit' : 'submitted';
+  for (const [label, value] of [['字符串false', 'false'], ['字符串true', 'true'], ['数字0', 0], ['数字1', 1],
+    ['null', null], ['对象', {}], ['数组', []], ['省略', undefined]]) {
+    const env = makeEnv({ detail: baseDetail() });
+    let pages = 0;
+    const browser = { page: (...args) => { pages++; return env.browser.page(...args); } };
+    const request = { op, taskId: 1, items: fresh, ...(label === '省略' ? {} : { [field]: value }) };
+    let output;
+    try { output = await erpApi(browser, 1, request); }
+    catch (error) { output = { thrown: String(error) }; }
+    results.push({ name: `${op}.${field}拒绝${label}且零页面通信/HTTP/PUT`,
+      pass: output.error === 'SKILL_INPUT' && output.problems?.some((p) => p.path === field && p.expected === 'boolean')
+        && (op !== 'save' || output.writeAttempted === false)
+        && pages === 0 && env.evaluations.length === 0 && env.calls.length === 0,
+      out: JSON.stringify(output) });
+  }
+}
 const readSnapshot = async (detail) => erpApi(makeEnv({ detail }).browser, 1, { op: 'snapshot', taskId: 1 });
 const t = async (name, state, req, check) => {
   const env = makeEnv(state);
@@ -442,6 +487,79 @@ for (const submit of [false, true]) {
       && JSON.stringify(verified.verifiedItemIds) === (submit ? '[1,2]' : '[1]')
       && env.calls.filter((c) => c.method === 'PUT').length === 1 && refreshes(env) === 1 });
 }
+
+// 22. 真实异步故障：页面隔离、fetch取消、分段失败、宿主通信挂起和TTL兜底。
+const noSlots = (env) => Object.keys(env.context.window.__erpApi || {}).length === 0 && env.timers.size === 0;
+const fault = async (name, state, request, check) => {
+  const env = makeEnv(state);
+  const started = Date.now();
+  let output;
+  try {
+    output = await fastErpApi(env.browser, 1, request);
+    const pass = await check(output, env, Date.now() - started);
+    results.push({ name, pass: !!pass, ...(pass ? {} : { out: JSON.stringify(output) }) });
+  } catch (error) { results.push({ name, pass: false, out: String(error) }); }
+};
+const hangingFetch = (url, opts) => new Promise((resolve, reject) => {
+  if (!opts.signal) { reject(new Error('missing AbortSignal')); return; }
+  const abort = () => { const error = new Error('aborted'); error.name = 'AbortError'; reject(error); };
+  if (opts.signal.aborted) abort();
+  else opts.signal.addEventListener('abort', abort, { once: true });
+});
+await fault('挂起GET实际被AbortController取消并清理', { fetchHook: hangingFetch }, { op: 'ping' },
+  (o, env, elapsed) => o.error === 'ERP_HTTP' && elapsed < 200 && env.calls.length === 1 && noSlots(env));
+await fault('挂起refresh取消属于ERP_HTTP且不污染令牌', { expireT1: true,
+  fetchHook: (url, opts) => url === '/api/v1/auth/refresh' ? hangingFetch(url, opts) : undefined }, { op: 'ping' },
+  (o, env) => o.error === 'ERP_HTTP' && env.store.local.zhul_token === 'T1'
+    && env.calls.length === 2 && noSlots(env));
+const faultBaseline = (await readSnapshot(baseDetail())).snapshot;
+await fault('挂起PUT取消后writeAttempted为true且绝不重放', { detail: baseDetail(),
+  fetchHook: (url, opts) => opts.method === 'PUT' ? hangingFetch(url, opts) : undefined },
+  { op: 'save', taskId: 1, submit: false, items: fresh, expectedSnapshot: faultBaseline },
+  (o, env) => o.error === 'ERP_HTTP' && o.writeAttempted === true
+    && env.calls.filter((c) => c.method === 'PUT').length === 1 && noSlots(env));
+for (const stage of ['upload', 'download']) {
+  await fault(`${stage}异步故障finally清理且异常令牌不输出`, { detail: baseDetail(),
+    evaluateHook: async (actual) => { if (actual === stage) { await delay(1); throw new Error('T1 sensitive context'); } } },
+    stage === 'upload' ? { op: 'save', taskId: 1, submit: false, items: fresh, expectedSnapshot: faultBaseline } : { op: 'task', taskId: 1 },
+    (o, env) => o.error === 'ERP_HTTP' && !JSON.stringify(o).includes('T1') && noSlots(env)
+      && (stage !== 'upload' || o.writeAttempted === true && env.calls.every((c) => c.method !== 'PUT')));
+}
+await fault('evaluate仅返回文件引用也执行finally清理', { detail: baseDetail(),
+  evaluateHook: async (stage) => { if (stage === 'download') { await delay(1); return { writtenToFile: true }; } } },
+  { op: 'snapshot', taskId: 1 }, (o, env) => o.error === 'ERP_HTTP' && noSlots(env));
+await fault('宿主evaluate永久挂起有界返回并清理已建槽', {
+  evaluateHook: (stage) => stage === 'request' ? new Promise(() => {}) : undefined }, { op: 'ping' },
+  (o, env, elapsed) => o.error === 'ERP_HTTP' && elapsed < 200 && env.calls.length === 0 && noSlots(env));
+await fault('cleanup通信挂起不拖住结果且页面TTL自行释放', {
+  evaluateHook: (stage) => stage === 'cleanup' ? new Promise(() => {}) : undefined }, { op: 'ping' },
+  async (o, env, elapsed) => {
+    const bounded = o.ok && elapsed < 150;
+    await delay(260);
+    return bounded && noSlots(env);
+  });
+await fault('迟到初始化超过总截止不创建槽或发送请求', {
+  evaluateHook: async (stage) => { if (stage === 'init') await delay(270); } }, { op: 'ping' },
+  async (o, env, elapsed) => {
+    const bounded = o.error === 'ERP_HTTP' && elapsed < 200;
+    await delay(280);
+    return bounded && env.calls.length === 0 && noSlots(env);
+  });
+await fault('整次save的多个接口共用总预算，超时前未PUT为false', { detail: baseDetail(),
+  evaluateHook: async () => { await delay(30); } },
+  { op: 'save', taskId: 1, submit: false, items: fresh, expectedSnapshot: faultBaseline },
+  async (o, env, elapsed) => {
+    await delay(60);
+    return o.error === 'ERP_HTTP' && o.writeAttempted === false && elapsed < 350
+      && env.calls.every((c) => c.method !== 'PUT') && noSlots(env);
+  });
+await fault('响应正文读取挂起同样可取消并清理', { fetchHook: async (url, opts) => ({ status: 200,
+  text: () => hangingFetch(url, opts) }) }, { op: 'ping' },
+  (o, env) => o.error === 'ERP_HTTP' && env.calls.length === 1 && noSlots(env));
+const isolatedEnvs = [makeEnv({}), makeEnv({ store: { local: {}, session: {} } })];
+const isolated = await Promise.all(isolatedEnvs.map((env) => fastErpApi(env.browser, 1, { op: 'ping' })));
+results.push({ name: '两个页面异步执行独立槽位与令牌，均无残留',
+  pass: isolated[0].ok && isolated[1].error === 'ERP_LOGIN' && isolatedEnvs.every(noSlots) });
 
 for (const r of results) console.log(`${r.pass ? 'PASS' : 'FAIL'}  ${r.name}${r.pass ? '' : '\n      ' + r.out + '\n      put=' + r.put}`);
 const passed = results.filter((r) => r.pass).length;

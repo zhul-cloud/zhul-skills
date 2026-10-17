@@ -1,10 +1,10 @@
 # ERP 接口与填报
 
-主代理或单代理执行任务读取、草稿、提交和核对前读本文。平台代理不调用 ERP。普通运行不需要读取 helper 源码；只有维护、接口同步或针对 helper 的排错时，才读 [erpApi 源码与 CONTRACT](../helpers/_erp/erpApi.md)。
+主代理或单代理执行任务读取、草稿、提交和核对前读本文。平台代理不调用 ERP。准备与登录按 [browseros-setup.md](browseros-setup.md)；helper 缺失/需同步时按需从 [erpApi 源码与 CONTRACT](../helpers/_erp/erpApi.md)确定性适配，不为常规接口调用通读源码。
 
 ## 调用接口
 
-技能自带的 `erpApi`（[helpers/_erp/erpApi.md](../helpers/_erp/erpApi.md)）由 `install-helpers` 装进 ERP 域名。调用方式：先打开自己的 ERP 标签页，下一次 `run` 里 `await helpers.erpApi(browser, <ERP 标签页 id>, { op, ... })`。
+技能自带的 `erpApi` 按[域注册流程](browseros-setup.md#按域注册与核验-helper)在当前 ERP 页通过 `saveHelper` 注册，下一次 `run` 核验后调用 `await helpers["erpApi"](browser, <ERP 标签页数字 id>, { op, ... })`；取任务前先 `ping`。`install-helpers` 仅是可选磁盘复制，不能代替实际加载验证。出现登录表单时先由 AI 勾选并读回记住我，再按[ERP 登录](browseros-setup.md#erp-登录)交用户处理凭据；交回后自动 `ping` 核实。
 
 | op | 参数 | 返回 |
 |---|---|---|
@@ -12,14 +12,15 @@
 | `list` | `done`：`false` 待处理，`true` 已回价 | `tasks`：`taskId`、任务编号、型号数、已填数、剩余分钟等 |
 | `task` | `taskId` | `run` 及同级 `snapshot`：任务信息和首次持久化基线 |
 | `snapshot` | `taskId` | 只读当前 ERP 的完整快照，用于与持久化基线对账 |
-| `save` | `taskId`、`submit`、`items`、`skipItemIds`、必填 `expectedSnapshot`（完整持久化基线） | 存草稿或提交回价、返回实际写入 itemIds；对账冲突返回 ERP_CONFLICT，不发 PUT |
-| `verify` | `taskId`、`submitted`、`items`、`skipItemIds`、原 `save` 的 `expectedSnapshot` | `mismatches`、`verifiedItemIds`、`inDoneList`、`filledCount`、同次 GET 的 `snapshot` |
+| `save` | `taskId`、必填布尔值 `submit`、`items`、`skipItemIds`、必填 `expectedSnapshot`（完整持久化基线） | 存草稿或提交回价、返回实际写入 itemIds；对账冲突返回 ERP_CONFLICT，不发 PUT |
+| `verify` | `taskId`、必填布尔值 `submitted`、`items`、`skipItemIds`、原 `save` 的 `expectedSnapshot` | `mismatches`、`verifiedItemIds`、`inDoneList`、`filledCount`、同次 GET 的 `snapshot` |
 
+- `save.submit` 和 `verify.submitted` 必须显式传 JSON 布尔值 `true` 或 `false`，不能省略，也不能传字符串、数字、`null`、对象或数组。非法输入在获取页面前返回 `SKILL_INPUT`，不发生页面通信；非法 `save` 同时返回 `writeAttempted:false`，不能将字符串 `"false"` 当作草稿参数。
 - 请求在 ERP 标签页里发出：令牌取自页面的登录状态，不离开浏览器，不写进对话和任何记录；GET 遇 HTTP 401 或响应 `code:401` 时最多续期并重读一次，续不了返回 `ERP_LOGIN`。PUT 已进入发送后遇任一种授权失败都不续期重发，返回 `ERP_LOGIN` 和 `writeAttempted:true`，登录恢复后只读核对原 payload。
 - 每次请求都按 `CONTRACT` 核对响应结构，对不上返回 `ERP_CONTRACT`（见本文「ERP 错误与重试边界」）；ERP 多出来的字段列在 `extraFields`。
 - `skipItemIds` 是辅助脚本的跳过列表，不是发给 ERP 服务器的新字段；每个 ID 必须属于本任务、不得重复，也不得与 `items` 重叠，否则返回 `SKILL_INPUT`。`verify` 用原基线重建完整写入计划，核对新报价、保留旧报价、自动带入的草稿、无货说明、供应商及附件，并拒绝本次替换状态中的额外/重复行；跳过型号的旧草稿保持原状，审核流合法旧已通过版本仍可并存。
 - `save` 的规则与 ERP 页面「提交回价」一致：同一型号上本人原有的报价行照带，同一平台同一店铺可合法补充或纠正，但首次发现已有人工同店内容须核对保留或有明确变更授权，不直接用新报价覆盖；基线未漂移后才按本次内容替换，并保留实际被替换版本上的原附件（同店草稿优先，不挪用未被替换版本的附件）；提交时其他型号上的草稿一并提交，`skipItemIds` 里的故障未完成型号除外；已报给客户的型号跳过。技能不新增上传附件。
-- 内容较多时 `erpApi` 会分段读写，单次调用一般在几秒内；整个任务的报价放在一次 `save` 里即可。
+- 内容较多时 `erpApi` 分段传输，但一次 helper 的全部接口、续期与分段共享 24 秒预算，给 BrowserOS `run` 的 30 秒上限留出收尾时间；页面通信、HTTP 和清理的更短时限见 [erpApi 源码说明](../helpers/_erp/erpApi.md)。每次 `run` 只调用一个 ERP 操作，后续 `save` / `verify` 分别用新的 `run`，不把多次 helper 及导航堆在同一调用里。完整写入 payload 仍按下节生成，不为避开时限拆散同型号报价。超时按 `ERP_HTTP` 处理；请求取消和槽位清理不证明 PUT 未写入，已发/未知写入仍只读核对原 payload 与原基线。
 - ERP 接口改了、技能还没同步时，维护者按[采购维护说明「ERP 接口改了怎么同步」](../../README.md#erp-接口改了怎么同步)更新 `CONTRACT` 并升版本。
 
 ## 选任务与读取
@@ -36,7 +37,7 @@
    - `lockedItems` 里是已报给客户（只读）的型号，跳过，汇报里说明。
    - **报价截止时刻**：ERP 的 `quoteDeadline` 只有日期，首次 `deadline` 由 `erpApi` 按读任务的时刻加上 `remainingMinutes`（剩余分钟）算出；恢复沿用原 deadline，不用重新读任务延长期限。
    - 返回的 `extraFields` 不为空时，记进实跑报告（ERP 新增了字段，不影响本次运行）。
-4. 任务里已经有本人的草稿报价时（`existingQuotes` 里有「草稿」），原样保留：提交回价时 `erpApi` 会把它们一并提交，不告知用户、不等确认，保留已有人工内容；同店补充/纠正先核对，未经授权不能覆盖人工内容（草稿备注里有原话和链接，可供核对）。本轮因故障无价而列进 `skipItemIds` 的型号除外，原草稿保留在 ERP 中、不随本次提交。
+4. 任务里已经有本人的草稿报价时（`existingQuotes` 里有「草稿」），原样保留：提交回价时 `erpApi` 会把它们一并提交，不告知用户、不等确认，保留已有人工内容；同店补充/纠正先核对，未经授权不能覆盖人工内容。`run.items[].existingQuotes` 仅列报价状态；原店名、报价、备注和附件 ID 从同次返回的 `snapshot.items[].quotes` 按型号 ID 核对，不能把状态列表当作完整报价。本轮因故障无价而列进 `skipItemIds` 的型号除外，原草稿保留在 ERP 中、不随本次提交。
 
 ## 草稿、核对、提交一次与再核对
 

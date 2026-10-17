@@ -17,7 +17,7 @@
 
 **派发**：模型和思考深度按 `subagents` 里所用 AI 的配置（Claude Code 用 `subagents.claude`，Codex 用 `subagents.codex`；留空的项沿用默认）。给每个子代理的任务说明要写清：
 
-- 平台名称，以及它要读的文件：[SKILL.md「关键红线」](../SKILL.md#关键红线)、[inquiry-rules.md](inquiry-rules.md)、[run-protocol.md「run.json」](run-protocol.md#runjson)及「平台记录与合并」、准备阶段通过 `settings.mjs json` 读取的本次 `settings` 合并值（直接传完整有效值，不传原始默认文件让子代理自行当作当前值）、需要解释时再读 [settings.md](settings.md)、`platforms/<平台>.md`，本机经验文件 `<数据目录>/learnings/<平台>.md`；
+- 平台名称，以及它要读的文件：[SKILL.md「关键红线」](../SKILL.md#关键红线)、[browseros-setup.md「按域注册与核验 helper」](browseros-setup.md#按域注册与核验-helper)、[inquiry-rules.md](inquiry-rules.md)、[run-protocol.md「run.json」](run-protocol.md#runjson)及「平台记录与合并」、准备阶段通过 `settings.mjs json` 读取的本次 `settings` 合并值（直接传完整有效值，不传原始默认文件让子代理自行当作当前值）、需要解释时再读 [settings.md](settings.md)、`platforms/<平台>.md`，本机经验文件 `<数据目录>/learnings/<平台>.md`；
 - 本任务每个型号的 `itemId`、型号、数量和单位、系统话术、该平台的全部货源直达链接（`run.json` 里 `items[].links` 的该平台部分，按顺序），以及报价截止时刻 `deadline`。子代理写报价时 `itemId` 必须用这里给的值；
 - 按 [run-protocol.md「本地防重复」](run-protocol.md#本地防重复)查到的该平台结果（哪些店沿用、哪些店不再问），沿用报价也写入平台文件，因为合并时会按平台覆盖；
 - 本次目录路径和唯一可写的平台文件 `run-<平台>.json`，最新断点、平台 `status`、未决 `pendingMessage` 和人助请求；`completed` 平台不再派发询价，只由主代理补做 ERP 写回；
@@ -25,17 +25,25 @@
 - 浏览器约束：用 `name_session` 把会话命名为「inquiry <任务编号> taobao」或「inquiry <任务编号> 1688」（名称要含英文字母或数字），只在自己新开的标签页里操作，不动 ERP 页面、其他平台和用户的标签页；结束时关掉自己打开的标签页。
 - 打卡和自检：挑店时每打开一条链接、每确认一家店，发询价和跟进时每一轮（查看一遍回复、发出一家），都执行 `node "<技能目录>/scripts/records.mjs" beat "<本次目录>" <平台> <在做什么>`（如「挑店 第 2 条链接」「等回复 3 家」）；停下等人处理时加 `--paused`。超过 `subagents.stallMinutes` 分钟没打卡，主代理会按卡住处理。关键动作先持久化，发送前记 `pendingMessage`，读回确认后再更新发送事实。所有店真正结束时写 `status: "completed"` 和 `stages.repliesDone`，执行 `records.mjs check "<本次目录>" <平台>` 自检，立即请求主代理代存草稿后再结束。中断时用 `check "<本次目录>" <平台> --partial` 核验断点，不能补造完成时间。
 
-**子代理不做的事**：不打开、不修改 ERP；不写 `run.json`、不执行 `records.mjs finish`；不直接向聊天中的用户提问，业务确认交主代理汇总。浏览器技术阻塞按下文「暂停与恢复」调用 BrowserOS 人助工具，并向主代理上报。
+**子代理不做的事**：不启动浏览器、不负责全局连接恢复、不打开或修改 ERP；不写 `run.json`、不执行 `records.mjs finish`；不直接向聊天中的用户提问，业务确认交主代理汇总。连接故障上报主代理，其他浏览器技术阻塞按下文「暂停与恢复」调用 BrowserOS 人助工具，并向主代理上报。
 
 **浏览器**：各执行者按 [SKILL.md「准备」](../SKILL.md#准备)读取当前 BrowserOS 使用说明；然后先列出现有标签，再复用窗口。多个代理连接 BrowserOS neo 时可能共享会话或标签组，不同的 `name_session` 名称不等于互相隔离；各代理记下自己打开的标签 ID 和网址，只操作分配给自己的平台和标签。共享登录需要用户处理时，暂停所有受影响的操作，不受影响的平台继续。
 
 - BrowserOS 仅在返回会话句柄（`session`）时，后续调用才传最近的有效句柄；从未返回时不自行构造。工具明确会话 stopped / no longer active 后，不再重复传死句柄，按下节恢复连接和标签归属。
-- 点「客服」打开的聊天页显示为用户的标签页，BrowserOS 不会在这类页面上自动加载站点脚本，要按平台说明「聊天页上的脚本要手动加载」调用。
+- 点「客服」打开的本任务聊天页可能显示为用户页，先核实来源/归属；helper 按[域注册及加载边界](browseros-setup.md#按域注册与核验-helper)处理，不操作无关用户页。
 - 这些显示为用户标签的聊天页和重复标签都是本次询价打开的，结束时照样关闭；关闭时报「No tab with given id」的，说明已经随同组标签关掉了，忽略即可，最后列一次标签确认没有残留。
 
 ## 暂停与恢复
 
-登录失效、验证码或滑块、账号异常、账号设置及其他人工协助（包括 ERP 登录）统一用当前 BrowserOS 的 `request_human_help` / `await_human_help`。业务发送前确认仍由主代理汇总，明确同意前不发；它不能代替技术人助或消耗未决请求。
+登录失效、验证码或滑块、账号异常、账号设置及其他人工协助（包括 ERP 登录）统一用当前 BrowserOS 的 `request_human_help` / `await_human_help`。ERP 登录表单提交前，AI 先按[ERP 登录](browseros-setup.md#erp-登录)勾选并读回记住我，再交用户处理凭据；交回后 `ping` 核实。业务发送前确认仍由主代理汇总，明确同意前不发；它不能代替技术人助或消耗未决请求。
+
+### 取任务前的人助
+
+取任务准备期间尚无本次目录时（包括用户已给 IQ 编号但尚未取得 run 目录），主代理在本轮会话和 BrowserOS 原请求中保留 owner、requestId、目标标签/网址、状态及核验失败次数，沿用下节的唯一 owner、持续 await 和交回后实际核验要求；不虚构 IQ，不创建业务 run，不执行 `beat` 或 `finish`。人助未解除前不选任务、不派发平台代理。任一次取消或超时，或同一阻塞连续两次实际核验失败，结束本轮准备，不称为某 IQ 或平台已经中断；核验通过才继续选任务。已有本次目录时按下节落盘与恢复。
+
+这里没有独立的本机准备断点机制。会话丢失后，先核实原 owner、原请求状态和目标页面；无法确认旧执行已停或未决请求状态时停止并说明，不盲建第二请求、不宣称已从本机恢复。
+
+### 已有任务目录时
 
 先保存平台断点和请求状态，并行时打 `--paused`。调用前先列标签，确认目标标签属本会话 owned 范围；会话命名、能操作该页或同窗存在该页均不能代替核查。无合适目标时在可用窗口创建任务页或按当前能力恢复归属，不用新窗掩盖登录态问题；无法安全归属时记录阻塞并上报。
 
@@ -51,7 +59,7 @@
 
 ### BrowserOS 会话失效或重连
 
-会话失效先持久化原 run、平台进度、未决发送和人助，不把连接错误当业务超时。明确会话 stopped / no longer active 时，下一次连接调用省略旧 session；连接不可用按当前 BrowserOS 技能排查，不换浏览器或用新窗口代替恢复。新连接第一步 `tabs action:"list"`，按持久化标签组 ID、任务名和网址确认原任务组；只有确认旧 owner 已停止、目标确属本任务后，才按当前工具用 `tabs action:"new", groupId:<原组ID>` 恢复归属，再复查 owned 标签，不抢其他任务组。当前版本仅 action:new 能 reclaim，其他 action 传 groupId 不成立。
+会话失效先持久化原 run、平台进度、未决发送和人助，不把连接错误当业务超时。明确会话 stopped / no longer active 时，下一次连接调用省略旧 session；连接不可用由主代理按[连接与启动](browseros-setup.md#连接与启动)区分进程未运行与 MCP 故障，必要时启动一次并有界核验，不换浏览器或用新窗口代替恢复。新连接第一步 `tabs action:"list"`，按持久化标签组 ID、任务名和网址确认原任务组；只有确认旧 owner 已停止、目标确属本任务后，才按当前工具用 `tabs action:"new", groupId:<原组ID>` 恢复归属，再复查 owned 标签，不抢其他任务组。当前版本仅 action:new 能 reclaim，其他 action 传 groupId 不成立。
 
 归属恢复后先核对原人助事件：仍有效且未决的由唯一 owner 续接；明确取消/超时已终态的不再 await。只有用户新一轮启动并完成[恢复核验记录](run-protocol.md#人助记录与解除)，才解除本轮阻塞；仍需登录/验证则在安全归属页申请当前人助。BrowserOS 连接恢复不证明 ERP/电商已登录，也不清除未知发送或提交尝试；ERP 提交已发/未知仍只读 verify 原 payload。
 
@@ -115,16 +123,16 @@
 
 | 情况 | 处理 |
 |---|---|
-| BrowserOS neo 连不上 | 停下，请用户启动 BrowserOS neo 并检查 MCP 连接 |
+| BrowserOS neo 连不上 | 主代理按[连接与启动](browseros-setup.md#连接与启动)检查 MCP、窗口/标签与可靠进程证据；确认未运行才按真实入口启动一次并最多等待 120 秒；已运行先恢复连接，确需人工时说明具体原因 |
 | 没登录、验证码、账号异常 | 按「暂停与恢复」请求人助；只暂停受影响平台，ERP 出问题只暂停写回；不记无货 |
 | `erpApi` 返回 `ERP_CONTRACT` | 立即停止 ERP 调用；独立平台继续保存本地结果，本轮不取下一 IQ。提示用户「ERP 接口已修改，烛龙智能询价没有同步，请更新技能」，把 `problems` 写进汇报和实跑报告（见 [erp-api.md「ERP 错误与重试边界」](erp-api.md#erp-错误与重试边界)） |
-| `erpApi` 调用不到 | 确认已执行 `install-helpers`、`config.json` 的 ERP 地址与 ERP 标签页一致，且本次 `run` 开始前已打开自己的 ERP 标签页 |
+| `erpApi` 调用不到 | 按[域注册流程](browseros-setup.md#按域注册与核验-helper)核实 ERP 地址/页域、运行时清单，按需从技能源码适配并 `saveHelper`；下一次 `run` 实际调用 `ping`，不以磁盘复制代替加载验证 |
 | 聊天页「连接断开」 | 只关本次自己打开的同平台多余聊天页，按平台说明重新打开一个；原有页影响连接时请用户处理 |
 | 平台弹出需要选择的账号设置（如聊天工具） | 停下，说明选项和影响，请用户决定 |
 | 子代理卡住（`watch` 输出 `stalled`） | 按「子代理卡住时」处理：停掉它，保存 interrupted 断点，其他平台继续，留草稿、不提交、不取下一 IQ |
 | 合并失败（`merge` 报错） | 按本文「合并与记录失败」处理：格式问题主代理改，文件坏了让原子代理仅重写记录一次，仍不行按该节记 interrupted 和 incompleteItems |
 | 子代理报错返回、中途出错 | 先查代理状态；等待超时不等于失败。确认原代理停止后，读取 `run-<平台>.json` 并核对已发送消息，再恢复原代理或重派；无法确认停止则暂停该平台，仍失败时保存 interrupted 断点并说明，不假写业务完成 |
 | 所用的 AI 派发子代理失败 | 先停止并核实已启动的平台代理，读取已有进度后改用单代理交替推进，在汇报里说明；无法确认停止的平台不重复接管 |
-| 站点脚本调用不到 | 先打开该域名的页面，下一次 `run` 才能调用；仍不行就按该平台说明里的手动步骤操作 |
+| 站点脚本调用不到 | 按[域注册流程](browseros-setup.md#按域注册与核验-helper)仅核对本次相关域的实际源码；已知旧官方自动同步，未知本机差异保留报告；注册后下一次独立 `run` 读回 hash 并只读调用核验，不以停用域缺失阻塞本次；必要时按平台明文步骤操作 |
 | 草稿/提交回价失败 | 按 [erp-api.md「ERP 错误与重试边界」](erp-api.md#erp-错误与重试边界)处理：只读请求或明确 writeAttempted:false 的 save 可按原限额重试；已发/未知 save（含草稿）只用原 payload 和原基线 verify，登录恢复不授权重放；正式提交仅明确 not_sent 可修复后用原 payload 重试，不凭错误名判断 |
 | 型号已报给客户（只读） | 跳过该型号，汇报里说明 |
