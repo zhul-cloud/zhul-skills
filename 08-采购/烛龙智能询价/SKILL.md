@@ -1,7 +1,7 @@
 ---
 name: 烛龙智能询价
 description: 为 ERP「我的询价」执行淘宝、1688 找店询价、跟进回复和提交回价；用于用户委托采购询价任务、明确调用本技能时的 start/询价/开始/处理或 IQ 任务编号，以及本技能用法/版本/更新/统计/settings/配置查看与修改请求。普通商品咨询、比价和其他采购操作不触发；用法、如何开始、版本、更新、统计和配置请求只走对应分支，不启动询价。
-version: 2.3.2
+version: 2.4.0
 ---
 
 # 烛龙智能询价
@@ -45,11 +45,11 @@ version: 2.3.2
 |---|---|
 | 仅说明或统计 | 本文「请求分流」及所需手册章节；不读执行引用 |
 | 配置查看、修改或解释 | 本文「请求分流」及 [settings.md](references/settings.md)；不读询价执行引用 |
-| 主代理：准备、取任务、填报 | 本文；[erp-api.md](references/erp-api.md)；[run-protocol.md](references/run-protocol.md)的本地防重复、主记录、汇报/报告；业务规则第 6、7 节用于报价整理/提醒 |
+| 主代理：准备、取任务、填报 | 本文；[browseros-setup.md](references/browseros-setup.md)；[erp-api.md](references/erp-api.md)；[run-protocol.md](references/run-protocol.md)的本地防重复、主记录、汇报/报告；业务规则第 6、7 节用于报价整理/提醒 |
 | 主代理：需要并行 | 另读 [execution.md](references/execution.md)共享协作、暂停、监控、故障/合并/收尾和当前客户端章节；不必读另一客户端映射 |
-| 平台子代理 | 本文关键红线；[业务规则](references/inquiry-rules.md)；[记录协议](references/run-protocol.md)的主字段和平台记录；本次设置及自己的平台说明/本机经验；[execution.md](references/execution.md)中与自己相关的协作/暂停和客户端章节。不能触 ERP |
+| 平台子代理 | 本文关键红线；[browseros-setup.md「按域注册与核验 helper」](references/browseros-setup.md#按域注册与核验-helper)；[业务规则](references/inquiry-rules.md)；[记录协议](references/run-protocol.md)的主字段和平台记录；本次设置及自己的平台说明/本机经验；[execution.md](references/execution.md)中与自己相关的协作/暂停和客户端章节。不能触 ERP，不启动浏览器 |
 | 单代理执行 | 主代理所需内容、完整业务规则、本次启用平台的说明/经验；[execution.md](references/execution.md)仅单代理、收尾、停止/继续及遇到的暂停/故障章节 |
-| 维护或针对 helper 排错 | 才读对应 `helpers/` 源码；ERP 接口地址/参数/响应 CONTRACT 以 [erpApi helper](helpers/_erp/erpApi.md)为维护对象 |
+| helper 缺失/需同步、维护或针对 helper 排错 | 按 [browseros-setup.md](references/browseros-setup.md#按域注册与核验-helper)按需读对应 `helpers/` 源码；ERP 接口地址/参数/响应 CONTRACT 以 [erpApi helper](helpers/_erp/erpApi.md)为维护对象 |
 
 平台说明：[淘宝](platforms/taobao.md)、[1688](platforms/1688.md)。本机经验在 `<数据目录>/learnings/<平台>.md`，存在时只读自己的平台。标「未实测」的页面做法要核对结果，验证后记录经验。
 
@@ -69,8 +69,8 @@ version: 2.3.2
 
 ## 关键红线
 
-1. **只用 BrowserOS neo 操作网页**。连不上就停下，请用户启动 BrowserOS neo 并检查 MCP 连接。
-2. **不碰密码和验证码**。登录状态由用户提供（ERP 和每个启用的平台都要登录）：没登录、弹验证码或滑块、账号异常，按 [人助协议](references/execution.md#暂停与恢复)请求处理；只暂停受影响平台，ERP 登录阻塞只暂停写回。不能把这些情况记成「无货」。
+1. **只用 BrowserOS neo 操作网页**。连接不可用先由主代理按[浏览器准备](references/browseros-setup.md#连接与启动)检查、必要时启动一次并核验 MCP；确需人工时报告具体阻塞，不重复启动或开窗代替排错。
+2. **不读取或输入密码、验证码**。ERP 登录表单提交前由 AI 主动勾选并读回「记住我」或对应「自动登录」选项，其他登录步骤按[ERP 登录](references/browseros-setup.md#erp-登录)及[人助协议](references/execution.md#暂停与恢复)处理。没登录、验证码或滑块、账号异常只暂停受影响平台，ERP 登录阻塞只暂停写回，不能记成「无货」。
 3. **发消息纪律**：每家店只发这五类消息：首次询价 1 条、追问不超过 `maxFollowUpsPerShop` 次、答复店家在可回复范围内且没答过的提问、信息齐全时道谢 1 句、发错对象时更正 1 句。每类怎么写见 [inquiry-rules.md 第 4 节](references/inquiry-rules.md#4-发给店家的消息sop-第四章手册第-3-节)；任何消息都不复述店家已经给出的价格、数量、运费、现货等信息（复述会被读成认可报价、准备下单）。除此之外不发任何消息：不砍价、不闲聊、不加微信或留电话、不答应下单、不点店家发来的下单卡片、不透露公司和客户信息。
 4. **店家结束聊天后不再发消息**。出现该平台的结束信号（见各平台说明：淘宝是「您对客服的服务满意吗」，1688 是「客服评价邀请」），这家立即结束，不追问、不道谢。结束信号由店家客服主动发出，不一定会出现；没出现不代表聊天还在进行，这家照常按计时和信息是否齐全结束。
 5. **发送前核对对象**：每次发送前，确认聊天区标题就是目标店铺，不一致不发；发送后读回一次，确认消息出现在目标会话里。发错时按 [inquiry-rules.md「发错对象时」](references/inquiry-rules.md#发错对象时)处理。
@@ -83,7 +83,7 @@ version: 2.3.2
 
 ## 准备
 
-执行主代理、单代理和平台代理在控制网页前，都先读本机已安装的 `browseros-neo` 技能；未安装时读当前 BrowserOS neo MCP 的使用说明和工具定义。按实际版本接口操作，不依赖维护者个人路径、不猜测 SDK/参数。工具不可用按当前连接说明排查并报告；先列窗口和标签，再复用可用窗口。以下准备由主代理或单代理执行。
+执行者控制网页前先读本机已安装的 `browseros-neo` 技能；未安装时读当前 MCP 使用说明和工具定义。精确接口以当前工具为准；连接和启动策略按 [browseros-setup.md](references/browseros-setup.md)，不能沿用「连不上即请用户启动」的旧默认。以下准备由主代理或单代理负责，平台代理只注册自己平台所需域的 helper。
 
 1. 每次实际开始新询价（含同一会话后续启动）先执行以下只读命令，重新校验并读取当前技能默认值与个人覆盖合并后的 `settings`，不用旧上下文中的值或直接读取原始默认文件；失败时指出问题并停止准备，不初始化、不安装站点脚本、不控制网页，仅按用户明确要求修正配置后重新检查：
 
@@ -93,21 +93,16 @@ version: 2.3.2
 
    输出含 `dataDir`、`defaultsPath`、`userSettingsPath` 和 `settings`；不创建数据目录或个人文件。将本次 `settings` 合并值用于运行提醒及后续派发，不让子代理读原始默认文件代替。通过只表示语法、键名、类型和范围合法，子代理模型与思考深度仍需核对当前工具实际支持情况，不能悄悄换模型。
 
-2. 初始化数据目录并安装站点脚本：
+2. 初始化数据目录：
 
    ```bash
    node "<技能目录>/scripts/records.mjs" init
-   node "<技能目录>/scripts/records.mjs" install-helpers
    ```
 
-   `init` 输出里 `erpUrl` 为空时，问用户 ERP 的网址，再执行 `init --erp <网址>` 保存，然后再执行一次 `install-helpers`。以后用户说「修改 ERP 地址」时按「请求分流」的独立 ERP 网址分支处理。`install-helpers` 把技能自带的站点脚本复制进 BrowserOS neo，已是最新的会跳过；本机已有同名但内容不同的电商平台脚本时只提示、不覆盖（见 [run-protocol.md「本机经验」](references/run-protocol.md#本机经验)）；ERP 接口脚本 `erpApi` 按 ERP 地址的域名安装，总是用技能自带的版本覆盖。
+   `erpUrl` 为空时询问 ERP 网址，再执行 `init --erp <网址>` 保存。单独修改地址仍走「请求分流」的保存分支。正常准备不执行 `install-helpers`，helper 按第 4 步注册。
 
-3. 调用 BrowserOS neo 的 `name_session`，名称用「inquiry <任务编号>」（还没定任务时用「inquiry」，定了再改）。名称要含英文字母或数字：纯中文名称会被拒绝（报 `name must contain a usable session name`）。
-4. **复用窗口**：先看已有的 BrowserOS 窗口和标签，有可用窗口就在里面新开自己的标签，不另开窗口；不动用户和其他任务的标签。
-5. **检查登录**：
-   - **ERP**：新开自己的标签页打开 `<erpUrl>/inquiry/my-tasks`，下一次 `run` 调用 `helpers.erpApi(browser, <这个标签页的 id>, { op: "ping" })`。返回 `ERP_LOGIN` 时按 [人助协议](references/execution.md#暂停与恢复)请求用户在 BrowserOS neo 里登录 ERP，并建议勾选「记住我」（不勾时令牌只在登录的那个标签页里，其他标签页用不了，也不能自动续期）。用户已在别的标签页登录、但没勾「记住我」时，仅可复用本任务 owned 或用户明确分配的原登录页；人助前仍须按当前工具恢复并核验 owned 归属。不操作未经分配的其他任务/用户页，不用新窗口代替登录态排查。
-   - **电商平台**：打开每个启用平台的首页，按各平台说明「登录」一节确认已登录。某个平台没登录时按人助协议请求登录；用户表示这次不用该平台时，本次跳过它并在汇报里说明。
-   - 缺哪个就告诉用户「请在 BrowserOS neo 里登录 xxx」，按 [execution.md「暂停与恢复」](references/execution.md#暂停与恢复)处理；BrowserOS 人助返回 `resolved` 后自动检查并继续，不要求用户再回主聊天确认。
+3. **连接与窗口**：按 [连接与启动](references/browseros-setup.md#连接与启动)先检查 MCP、窗口/标签和可靠进程证据，确认未运行才用当前机器真实入口启动一次，有界等待 MCP 成功后继续。连通后 `name_session` 用「inquiry <任务编号>」（未定任务用「inquiry」），名称含英文字母或数字；复用可用窗口，只新建自己的任务标签。
+4. **注册与登录**：打开自己的 ERP 页，按 [按域注册与核验 helper](references/browseros-setup.md#按域注册与核验-helper)核对运行时清单及实际源码内容，从技能源码确定性适配并按需 `saveHelper`，下一次独立 `run` 读回内容 hash 核验并调用 ERP `ping`。已知旧官方电商版本自动同步，未知本机差异保留报告，不仅凭同名认定已更新。遇登录表单先按 [ERP 登录](references/browseros-setup.md#erp-登录)主动勾选并读回记住我，再请求用户完成凭据步骤；交回后 `ping` 验证并继续。按各平台说明检查启用平台登录，在搜索/聊天域首次使用时各自注册 helper；停用域缺失不阻塞本次。人助 `resolved` 后自动核验，不要求用户回聊天说「继续」。
 
 
 ## 流程骨架
@@ -124,7 +119,7 @@ version: 2.3.2
 
 ## 暂停、用户停止与失败边界
 
-- 所有人工协助含 ERP 登录走 [BrowserOS 人助协议](references/execution.md#暂停与恢复)：owned 目标页、唯一 owner 持续 await、Hand back 后核验即自动继续；同阻塞连续两次核验失败，或任一次取消/总时限超时，记受影响平台 `interrupted`。其他平台继续，本轮结束当前 IQ、只留草稿、不取下一任务。ERP 人助失败仅阻断写回，本地结果保留。
+- 所有人工协助含 ERP 登录走 [BrowserOS 人助协议](references/execution.md#暂停与恢复)：取任务前尚无本次目录时按[准备人助边界](references/execution.md#取任务前的人助)处理；已有任务时，owned 目标页、唯一 owner 持续 await、Hand back 后核验即自动继续。同阻塞连续两次核验失败，或任一次取消/总时限超时，记受影响平台 `interrupted`。其他平台继续，本轮结束当前 IQ、只留草稿、不取下一任务。ERP 人助失败仅阻断写回，本地结果保留。
 - 用户说停：立即停止全部执行者及 ERP 写入，核实停止后保存断点、合并可核验进度、幂等 `finish`、报告和汇报；不自动续跑，不补造发送、业务结束或无货。
 - 同一平台只有一个执行者。恢复原 run 前确认旧执行停止，先读新回复并核验未决发送，保留原计时、追问次数、已答话题、道谢和截止时刻；completed 不重问，业务真正结束的店不再联系。消息发送结果未知只查聊天证据，不盲重发。
 - 平台卡住或记录损坏保存中断断点，其他平台继续；格式损坏可仅重写记录一次，不恢复询价。中断不等于完成，不伪造 `endedAt`、`repliesDone` 或 `noStock`。

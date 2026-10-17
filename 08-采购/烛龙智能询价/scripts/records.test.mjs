@@ -51,6 +51,60 @@ test('version reads the actual skill version and absolute directory without crea
     assert.equal(existsSync(join(f.home, '.zhul-trade-sourcing')), false);
 });
 
+test('explicit ERP home/deep-link addresses save origin and preserve other config/settings', (t) => {
+    const f = fixture(t);
+    const dataDir = join(f.home, '.zhul-trade-sourcing');
+    mkdirSync(dataDir);
+    const configPath = join(dataDir, 'config.json');
+    const settingsPath = join(dataDir, 'settings.json');
+    writeFileSync(configPath, JSON.stringify({ erpUrl: 'https://old.example.invalid', other: 'keep' }));
+    writeFileSync(settingsPath, '{"dedupeDays":5}\n');
+    for (const [url, expected] of [
+        ['http://localhost:8000/inquiry/my-tasks?done=false#section', 'http://localhost:8000'],
+        ['https://erp.example.invalid:8443/', 'https://erp.example.invalid:8443'],
+        ['https://erp.example.invalid:443/inquiry/my-tasks/', 'https://erp.example.invalid'],
+    ]) {
+        assert.equal(f.json('init', '--erp', url).erpUrl, expected);
+        assert.deepEqual(JSON.parse(readFileSync(configPath, 'utf8')), { erpUrl: expected, other: 'keep' });
+        assert.equal(readFileSync(settingsPath, 'utf8'), '{"dedupeDays":5}\n');
+    }
+});
+
+test('plain init does not silently migrate an existing ERP address or personal settings', (t) => {
+    const f = fixture(t);
+    const dataDir = join(f.home, '.zhul-trade-sourcing');
+    mkdirSync(dataDir);
+    const configPath = join(dataDir, 'config.json');
+    const settingsPath = join(dataDir, 'settings.json');
+    const config = '{"erpUrl":"https://old.example.invalid/inquiry/my-tasks"}\n';
+    writeFileSync(configPath, config);
+    writeFileSync(settingsPath, '{"dedupeDays":5}\n');
+    assert.equal(f.json('init').erpUrl, 'https://old.example.invalid/inquiry/my-tasks');
+    assert.equal(readFileSync(configPath, 'utf8'), config);
+    assert.equal(readFileSync(settingsPath, 'utf8'), '{"dedupeDays":5}\n');
+});
+
+for (const args of [['--erp'], ['--erp', '--force'], ['--erp', 'localhost:8000'],
+    ['--erp', 'not a URL'], ['--erp', 'file:///tmp/erp'], ['--erp', 'ftp://example.invalid'],
+    ['--erp', 'https://user:secret@example.invalid'], ['--erp', 'http://localhost:99999'],
+    ['--erp', 'https://example.invalid', 'extra']]) {
+    test(`invalid init address rejects before creating directories or replacing config: ${args.map((arg) => arg.includes('secret') ? '<URL with credentials>' : arg).join(' ')}`, (t) => {
+        const f = fixture(t);
+        const dataDir = join(f.home, '.zhul-trade-sourcing');
+        assert.notEqual(f.cli('init', ...args).status, 0);
+        assert.equal(existsSync(dataDir), false);
+        mkdirSync(dataDir);
+        const configPath = join(dataDir, 'config.json');
+        const config = '{"erpUrl":"https://original.example.invalid","other":true}\n';
+        writeFileSync(configPath, config);
+        const out = f.cli('init', ...args);
+        assert.notEqual(out.status, 0);
+        assert.equal(out.stdout, '');
+        assert.equal(readFileSync(configPath, 'utf8'), config);
+        for (const name of ['runs', 'reports', 'learnings']) assert.equal(existsSync(join(dataDir, name)), false);
+    });
+}
+
 test('version follows a copied script in a path with spaces and needs no settings', (t) => {
     const f = fixture(t);
     const skillDir = join(f.root, 'copied skill with spaces');
@@ -153,7 +207,25 @@ test('same-round manual candidates exclude A, while a new round resumes A and pr
     assert.equal(f.lines('processed-tasks.jsonl').some((r) => r.result === 'skipped'), false);
 });
 
-test('installed ecommerce helpers retain caller-owned page signatures and matching metadata', (t) => {
+test('explicit skip supersedes manual while an unfinished run remains, without weakening submitted history', (t) => {
+    const f = fixture(t);
+    const a = f.json('open-run', 'IQ-A').runDir;
+    writeFileSync(join(a, 'run.json'), JSON.stringify(run({ task: 'IQ-A' })));
+    f.ok('manual', 'IQ-A', '需人工核对');
+    assert.equal(f.json('next', 'IQ-A').resumeRun, a);
+    f.ok('skip', 'IQ-A', 'ERP不可编辑');
+    f.ok('manual', 'IQ-A', '后续记录不能撤销skip');
+    const next = f.json('next', 'IQ-A', 'IQ-B');
+    assert.equal(next.next, 'IQ-B');
+    assert.equal(next.resumeRun, undefined);
+    assert.match(next.skipped[0].reason, /已跳过：ERP不可编辑/);
+    writeFileSync(join(a, 'run.json'), JSON.stringify(run({ task: 'IQ-A', submitted: true })));
+    f.ok('finish', join(a, 'run.json'));
+    f.ok('skip', 'IQ-A', '后续skip不能撤销提交');
+    assert.match(f.json('next', 'IQ-A').skipped[0].reason, /已提交/);
+});
+
+test('optional disk export retains source files and explicitly reports not runtime loaded', (t) => {
     const f = fixture(t);
     const helpersDir = join(f.root, 'isolated-helpers');
     mkdirSync(helpersDir);
@@ -162,16 +234,60 @@ test('installed ecommerce helpers retain caller-owned page signatures and matchi
     });
     assert.equal(install.status, 0, install.stderr);
     const result = JSON.parse(install.stdout);
-    assert.equal(result.installed.length, 6);
+    assert.equal(result.copied.length, 6);
+    assert.equal(result.runtimeLoaded, false);
+    assert.match(result.note, /copied 不等于 runtimeLoaded/);
     assert.deepEqual(result.kept, []);
     const skillDir = resolve(script, '../..');
-    for (const helper of result.installed) {
+    for (const helper of result.copied) {
         const installed = readFileSync(join(helpersDir, `${helper}.md`), 'utf8');
         assert.equal(installed, readFileSync(join(skillDir, 'helpers', `${helper}.md`), 'utf8'));
         assert.match(installed, /^opensPage: false$/m);
         assert.match(installed, /async \(browser, pageId, \w+\) =>/);
         assert.match(installed, /const page = browser\.page\(pageId\)/);
     }
+});
+
+test('disk export requires an explicit existing directory and never guesses a BrowserOS path', (t) => {
+    const f = fixture(t);
+    const env = { ...process.env, HOME: f.home, USERPROFILE: f.home };
+    delete env.BROWSEROS_HELPERS_DIR;
+    const out = spawnSync(process.execPath, [script, 'install-helpers'], { env, encoding: 'utf8', timeout: 5000 });
+    assert.notEqual(out.status, 0);
+    assert.match(out.stderr, /维护者导出文件/);
+    assert.match(out.stderr, /copied 不等于 runtimeLoaded/);
+    assert.equal(out.stdout, '');
+    assert.equal(existsSync(join(f.home, '.zhul-trade-sourcing')), false);
+});
+
+test('disk export preserves differing platform files and refreshes ERP without claiming runtime success', (t) => {
+    const f = fixture(t);
+    const helpersDir = join(f.root, 'isolated-helpers');
+    const platformFile = join(helpersDir, 's.taobao.com', 'searchCandidates.md');
+    const erpFile = join(helpersDir, 'erp.example.invalid', 'erpApi.md');
+    mkdirSync(dirname(platformFile), { recursive: true });
+    mkdirSync(dirname(erpFile), { recursive: true });
+    writeFileSync(platformFile, 'local platform improvement');
+    writeFileSync(erpFile, 'old ERP');
+    f.ok('init', '--erp', 'https://erp.example.invalid');
+    const invoke = (...args) => spawnSync(process.execPath, [script, 'install-helpers', ...args], {
+        env: { ...process.env, HOME: f.home, USERPROFILE: f.home, BROWSEROS_HELPERS_DIR: helpersDir }, encoding: 'utf8', timeout: 5000,
+    });
+    const exported = invoke();
+    assert.equal(exported.status, 0, exported.stderr);
+    const result = JSON.parse(exported.stdout);
+    assert.deepEqual(result.kept, ['s.taobao.com/searchCandidates']);
+    assert.equal(result.runtimeLoaded, false);
+    assert.match(exported.stderr, /先比对、保留本地改进/);
+    assert.equal(readFileSync(platformFile, 'utf8'), 'local platform improvement');
+    assert.match(readFileSync(erpFile, 'utf8'), /^host: "erp.example.invalid"$/m);
+    const force = invoke('--force');
+    assert.equal(force.status, 0, force.stderr);
+    assert.deepEqual(JSON.parse(force.stdout).kept, []);
+    assert.equal(readFileSync(platformFile, 'utf8'), readFileSync(new URL('../helpers/s.taobao.com/searchCandidates.md', import.meta.url), 'utf8'));
+    const unchanged = invoke();
+    assert.equal(unchanged.status, 0, unchanged.stderr);
+    assert.equal(JSON.parse(unchanged.stdout).unchanged.length, 7);
 });
 
 test('finish keeps unsubmitted prices, freeShipping and original reuse time', (t) => {

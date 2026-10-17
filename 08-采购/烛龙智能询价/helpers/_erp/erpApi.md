@@ -9,22 +9,24 @@ description: "烛龙智能询价：在 ERP 标签页里调用「我的询价」�
 inputs: {}
 ---
 
-烛龙智能询价：在 ERP 标签页里调用「我的询价」接口。由 `records.mjs install-helpers` 按 `config.json` 里的 ERP 地址装进对应域名，`host` 由安装时填入。
+烛龙智能询价：在 ERP 标签页里调用「我的询价」接口。按 [BrowserOS 准备协议](../../references/browseros-setup.md)用 `scripts/helpers.mjs source _erp/erpApi --erp <ERP地址>` 生成适配源码，再在当前 ERP 域的 owned 页通过 `page.saveHelper("erpApi", source)` 注册；下一次 run 验证。磁盘导出不等于运行时已加载。
 
 Call it:
 
 `helpers["erpApi"](browser, pageId, { op: "task", taskId: 1 })`
 
-- `pageId`：本任务 owned 或用户明确分配的已登录 ERP 标签页（同一个 ERP 地址）；人助前仍须核验 owned 归属。脚本只在页面里取令牌、发请求，不点页面，也不返回令牌。
+- `pageId`：本任务 owned 或用户明确分配的 ERP 标签页（同一个 ERP 地址）；登录页也可注册 helper 并调用 `ping`，返回 `ERP_LOGIN` 时按登录协议请求人助，业务操作前须实际确认登录。人助前仍须核验 owned 归属。脚本只在页面里取令牌、发请求，不点页面，也不返回令牌。
 - `op`：`ping`（检查登录）、`list`（`done`: true 已回价 / false 待处理）、`task`（`taskId`；读任务，返回可直接写进 run.json 的内容及 `snapshot`）、`snapshot`（`taskId`；只读任务与报价快照）、`save`（`taskId`、`items`、必传 `expectedSnapshot`、`submit`: false 存草稿 / true 提交回价）、`verify`（`taskId`、`items`、必传原 save 的 `expectedSnapshot`、`submitted`: 是否已提交；核对完整写入范围）。`items` 由 `records.mjs erp-items` 生成。
+- `save.submit` 和 `verify.submitted` 必须显式传布尔值 `false` 或 `true`；字符串、数字、`null`、对象及省略都在页面通信前返回 `SKILL_INPUT`，无默认值。非法 `save.submit` 同时返回 `writeAttempted:false`，不会因字符串 `"false"` 被当成正式提交。
 - `expectedSnapshot` 是首次读取或上次成功核对后持久化的 `snapshot`，不能在恢复时直接用新读快照替换旧基线。每次 `save` 重新读回 ERP，对所有实际写入的型号比较已知报价字段、状态和附件 ID（含提交时自动带入的其他草稿）；变化返回 `ERP_CONFLICT`，不发 PUT。快照没有令牌、附件 URL 或其他未知字段。GET 与 PUT 不是原子事务，主代理必须单一串行写入，ERP 缺少版本条件接口时仍不能排除二者之间的人工修改。
 - `save` 的正常返回都含 `writeAttempted`：进入业务 PUT 调用前的失败为 `false`，进入调用后的成功或错误为 `true`（不表示写入成功）。只有明确返回 `false` 才能按原错误重试边界修复后重试；抛出、中断或没有回包仍属结果未知，只读核对，不推断为 `false`。
 - GET 遇 HTTP 401 或响应 `code:401` 时最多续期并重读一次；PUT 遇任一种授权失败均返回 `ERP_LOGIN`、`writeAttempted:true`，不自动续期重发。登录恢复后按原 payload 只读核对。续期成功后的 GET 网络故障仍返回 `ERP_HTTP`。
+- 为给 BrowserOS `run` 的 30 秒上限留出收尾时间，整次 helper 的接口与分段传输共用 24 秒预算；每次页面通信最多 9 秒，页面 HTTP（含同次续期与重读）最多 8 秒，清理另限 0.5 秒。超时返回 `ERP_HTTP`，页面请求可取消且临时槽位在 `finally` 清理，通信中断时由页面到期清理兜底。这是保护预算，不是店家回复等待配置；取消不证明 PUT 未写入，原 `writeAttempted` 与只读核对边界照旧。运行沙箱缺少标准计时器时在通信前明确失败，不能据离线测试宣称浏览器已可用。
 - `save` / `verify` 同时传 `erp-items` 输出的 `skipItemIds`（不传按空数组）：因询价故障且无有效报价而排除的型号 ID，必须属于本任务、不重复且不与 `items` 重叠。提交时这些型号的原草稿保留原状，其余型号的草稿照常一并提交。
 - `verify` 用原 payload 和写入前基线重建与 save 相同的完整计划，检查新报价、保留报价、自动带入的其他型号草稿、无货说明、供应商与附件，并拒绝本次替换状态中的额外/重复行；审核流合法保留的旧已通过版本不当作额外待审核行。返回 `verifiedItemIds` 是实际核对范围，`snapshot` 来自同一次详情 GET。不能拿核对时新读取的 snapshot 作为原 expectedSnapshot。`inDoneList`、`filledCount`、`itemCount` 是任务汇总观察信息，不参与 `ok`，不能据此确认或否定本次写入。
 - 返回 `{ ok: true, ... }`；出错返回 `{ ok: false, error, ... }`：
   - `ERP_CONTRACT`：接口结构和下面 CONTRACT 记录的不一致（缺字段、类型变了、取值不认识、接口不存在）。停止 ERP 调用，按 [ERP 错误与重试边界](../../references/erp-api.md#erp-错误与重试边界)保存可独立完成的平台本地结果，本轮不取下一 IQ；提示「ERP 接口已修改，烛龙智能询价没有同步，请更新技能」，把 `problems` 写进实跑报告。
-  - `ERP_LOGIN`：没登录、读取无法续期或业务 PUT 授权失败，请用户在 BrowserOS neo 里重新登录 ERP（建议勾选「记住我」）；已发/未知 save 仍只读核对。
+  - `ERP_LOGIN`：没登录、读取无法续期或业务 PUT 授权失败，按 [ERP 登录准备](../../references/browseros-setup.md#erp-登录)先检查 owned 页与会话；AI 可准备登录页面和「记住我」，凭据、验证码由用户处理。已发/未知 save 仍只读核对。
   - `ERP_BIZ`：ERP 拒绝了这次请求（如「货期不在可选值内」）；只有明确 `writeAttempted:false` 才可按 [ERP 重试边界](../../references/erp-api.md#erp-错误与重试边界)纠错重试。已发或结果未知的 save（含草稿）只核对原 payload 和原基线，不重放。
   - `ERP_CONFLICT`：ERP 与持久化基线不同；保留当前 ERP，不自动换新基线重试，读回差异并转人工核对。
   - `ERP_HTTP`：网络或服务器错误、ERP 标签页不可用；只读请求或明确 `writeAttempted:false` 的 save 稍等后最多重试一次。已发或结果未知的 save（含草稿）只用原 payload 和原基线 verify，登录恢复不授权重放；仍失败按 [ERP 错误与重试边界](../../references/erp-api.md#erp-错误与重试边界)转人工。
@@ -33,6 +35,14 @@ Call it:
 
 ```js
 async (browser, pageId, req) => {
+  const op = req && req.op;
+  const modeField = op === 'save' ? 'submit' : op === 'verify' ? 'submitted' : null;
+  if (modeField && typeof req[modeField] !== 'boolean') {
+    return { ok: false, error: 'SKILL_INPUT',
+      problems: [{ path: modeField, expected: 'boolean',
+        actual: req[modeField] === undefined ? 'missing' : req[modeField] === null ? 'null' : typeof req[modeField] }],
+      ...(op === 'save' ? { writeAttempted: false } : {}) };
+  }
   // ===== 接口约定 =====
   // ERP 可能跑在本机、测试服务器或正式服务器上，部署的是哪个版本无法从接口读到，所以不按版本号判断，
   // 而是每次请求都按下面的结构核对：对得上就能用，对不上就停。checkedAt 是这份约定最后一次对照 ERP 核对的日期。
@@ -95,6 +105,22 @@ async (browser, pageId, req) => {
 
   const page = browser.page(pageId);
   const extraFields = new Set();
+  // 同一次 helper 的所有 GET、续期、分段传输和 PUT 共用预算，不因下一接口重新计时。
+  const OP_BUDGET_MS = 24_000;
+  const EVALUATE_MS = 9_000;
+  const REQUEST_MS = 8_000;
+  const CLEANUP_MS = 500;
+  const deadlineAt = Date.now() + OP_BUDGET_MS;
+  const bounded = async (work, ms) => {
+    if (typeof setTimeout !== 'function' || typeof clearTimeout !== 'function') throw new Error('ERP_TIMER_UNAVAILABLE');
+    if (ms <= 0) throw new Error('ERP_TIMEOUT');
+    let timer;
+    try {
+      return await Promise.race([Promise.resolve().then(work), new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('ERP_TIMEOUT')), ms);
+      })]);
+    } finally { clearTimeout(timer); }
+  };
 
   // ----- 结构校验：缺字段、类型不对记为 problems；多出来的字段记进 extraFields -----
   const check = (value, spec, path, problems) => {
@@ -134,7 +160,10 @@ async (browser, pageId, req) => {
     try {
       return await callRaw(name, opts);
     } catch (e) {
-      return { fail: { ok: false, error: 'ERP_HTTP', endpoint: name, message: String((e && e.message) || e) } };
+      // 底层错误可能含请求上下文，不把任意异常/令牌转发到调用方。
+      return { fail: { ok: false, error: 'ERP_HTTP', endpoint: name,
+        message: e && e.message === 'ERP_TIMEOUT' ? 'ERP 请求或页面通信超时'
+          : e && e.message === 'ERP_TIMER_UNAVAILABLE' ? 'helper 运行环境缺少有界通信所需的计时器' : 'ERP 请求或页面通信失败' } };
     }
   };
   const callRaw = async (name, { pathParams = {}, query, body } = {}) => {
@@ -145,66 +174,99 @@ async (browser, pageId, req) => {
     // 内容先放在页面的 window.__erpApi 里，每次只传一小段（800 个字符，中文和转义后也在限制内）
     const CHUNK = 800;
     const ev = async (fn, arg) => {
-      const w = await page.evaluate(fn, arg);
+      const w = await bounded(() => page.evaluate(fn, arg), Math.min(EVALUATE_MS, deadlineAt - Date.now()));
       if (w && w.writtenToFile) throw new Error('page.evaluate 返回内容过大');
       return w && w.value !== undefined ? w.value : w;
     };
     const key = `k${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
     const bodyText = body ? JSON.stringify(body) : '';
-    await ev((key) => { (window.__erpApi = window.__erpApi || {})[key] = { up: '', text: '' }; return true; }, key);
-    for (let i = 0; i < bodyText.length; i += CHUNK) {
-      await ev(({ key, part }) => { window.__erpApi[key].up += part; return true; }, { key, part: bodyText.slice(i, i + CHUNK) });
-    }
-    const res = await ev(async ({ key, method, url, refreshPath }) => {
-      const slot = window.__erpApi[key];
-      const body = slot.up || undefined;
-      const read = () => sessionStorage.getItem('akt') || localStorage.getItem('zhul_token');
-      const send = async (token) => {
-        const r = await fetch(url, { method, credentials: 'include',
-          headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) }, body });
-        slot.text = await r.text();
-        return r.status;
-      };
-      let token = read();
-      if (!token) return { login: true, reason: 'no-token' };
-      let http = await send(token);
-      const unauthorized = () => {
-        if (http === 401) return true;
-        try { return JSON.parse(slot.text).code === 401; } catch (e) { return false; }
-      };
-      if (unauthorized()) {
-        // PUT 已进入发送，不凭授权错误推断未写入，也不在 helper 内重放。
-        if (method !== 'GET') return { login: true, reason: 'expired' };
-        // 与前端相同：用 HttpOnly 续期 Cookie 换新令牌，写回原来的位置（只有登录时勾了「记住我」才有续期 Cookie）
-        let refreshed = false;
+    let res;
+    try {
+      await ev(({ key, deadlineAt }) => {
+        if (Date.now() >= deadlineAt) throw new Error('ERP_TIMEOUT');
+        const slots = window.__erpApi = window.__erpApi || {};
+        const slot = slots[key] = { up: '', text: '', controller: null };
+        // 即使宿主中断、finally 无法通信或初始化晚到，页面也会取消请求并释放槽位。
+        slot.timer = setTimeout(() => {
+          slot.controller?.abort();
+          delete slots[key];
+        }, deadlineAt - Date.now());
+        return true;
+      }, { key, deadlineAt });
+      for (let i = 0; i < bodyText.length; i += CHUNK) {
+        await ev(({ key, part }) => { window.__erpApi[key].up += part; return true; }, { key, part: bodyText.slice(i, i + CHUNK) });
+      }
+      res = await ev(async ({ key, method, url, refreshPath, deadlineAt, requestMs }) => {
+        const slot = window.__erpApi?.[key];
+        if (!slot || Date.now() >= deadlineAt) throw new Error('ERP_TIMEOUT');
+        const controller = slot.controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), Math.min(requestMs, deadlineAt - Date.now()));
         try {
-          const r = await fetch(refreshPath, { method: 'POST', credentials: 'include' });
-          const j = await r.json();
-          if (r.status >= 200 && r.status < 300 && j && j.code === 0 && j.data
-            && typeof j.data.accessToken === 'string' && j.data.accessToken.trim()) {
-            if (sessionStorage.getItem('akt')) sessionStorage.setItem('akt', j.data.accessToken);
-            else localStorage.setItem('zhul_token', j.data.accessToken);
-            token = j.data.accessToken;
-            refreshed = true;
+          const body = slot.up || undefined;
+          const read = () => sessionStorage.getItem('akt') || localStorage.getItem('zhul_token');
+          const send = async (token) => {
+            if (controller.signal.aborted || Date.now() >= deadlineAt) throw new Error('ERP_TIMEOUT');
+            const r = await fetch(url, { method, credentials: 'include', signal: controller.signal,
+              headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) }, body });
+            slot.text = await r.text();
+            if (controller.signal.aborted || Date.now() >= deadlineAt) throw new Error('ERP_TIMEOUT');
+            return r.status;
+          };
+          let token = read();
+          if (!token) return { login: true, reason: 'no-token' };
+          let http = await send(token);
+          const unauthorized = () => {
+            if (http === 401) return true;
+            try { return JSON.parse(slot.text).code === 401; } catch (e) { return false; }
+          };
+          if (unauthorized()) {
+            // PUT 已进入发送，不凭授权错误推断未写入，也不在 helper 内重放。
+            if (method !== 'GET') return { login: true, reason: 'expired' };
+            // 与前端相同：用 HttpOnly 续期 Cookie 换新令牌，写回原来的位置（只有登录时勾了「记住我」才有续期 Cookie）
+            let refreshed = false;
+            try {
+              if (controller.signal.aborted || Date.now() >= deadlineAt) throw new Error('ERP_TIMEOUT');
+              const r = await fetch(refreshPath, { method: 'POST', credentials: 'include', signal: controller.signal });
+              const j = await r.json();
+              if (controller.signal.aborted || Date.now() >= deadlineAt) throw new Error('ERP_TIMEOUT');
+              if (r.status >= 200 && r.status < 300 && j && j.code === 0 && j.data
+                && typeof j.data.accessToken === 'string' && j.data.accessToken.trim()) {
+                if (sessionStorage.getItem('akt')) sessionStorage.setItem('akt', j.data.accessToken);
+                else localStorage.setItem('zhul_token', j.data.accessToken);
+                token = j.data.accessToken;
+                refreshed = true;
+              }
+            } catch (e) {
+              if (controller.signal.aborted || Date.now() >= deadlineAt) throw new Error('ERP_TIMEOUT');
+              /* 续期失败，按未登录处理 */
+            }
+            // 续期后的业务 GET 网络故障属于 ERP_HTTP，不能被上面的续期失败处理吞掉。
+            if (refreshed) http = await send(token);
+            if (unauthorized()) return { login: true, reason: 'expired' };
           }
-        } catch (e) { /* 续期失败，按未登录处理 */ }
-        // 续期后的业务 GET 网络故障属于 ERP_HTTP，不能被上面的续期失败处理吞掉。
-        if (refreshed) http = await send(token);
-        if (unauthorized()) return { login: true, reason: 'expired' };
+          return { http, length: slot.text.length };
+        } finally { clearTimeout(timer); }
+      }, { key, method: ep.method, url, refreshPath: CONTRACT.endpoints.refresh.path, deadlineAt, requestMs: REQUEST_MS });
+      if (!res.login) {
+        let text = '';
+        for (let i = 0; i < res.length; i += CHUNK) {
+          text += await ev(({ key, i, n }) => window.__erpApi[key].text.slice(i, i + n), { key, i, n: CHUNK });
+        }
+        try { res.json = JSON.parse(text); } catch (e) { res.json = null; }
       }
-      return { http, length: slot.text.length };
-    }, { key, method: ep.method, url, refreshPath: CONTRACT.endpoints.refresh.path });
-    if (!res.login) {
-      let text = '';
-      for (let i = 0; i < res.length; i += CHUNK) {
-        text += await ev(({ key, i, n }) => window.__erpApi[key].text.slice(i, i + n), { key, i, n: CHUNK });
-      }
-      try { res.json = JSON.parse(text); } catch (e) { res.json = null; }
+    } finally {
+      // 独立的短清理预算；失败不覆盖原结果，页面 TTL 仍负责最终取消/释放。
+      try {
+        await bounded(() => page.evaluate((key) => {
+          const slot = window.__erpApi?.[key];
+          if (slot) { slot.controller?.abort(); clearTimeout(slot.timer); delete window.__erpApi[key]; }
+          return true;
+        }, key), CLEANUP_MS);
+      } catch (e) { /* 页面已关闭或通信不可用，交给槽位 TTL */ }
     }
-    await ev((key) => { delete window.__erpApi[key]; return true; }, key);
 
     if (res.login) return { fail: { ok: false, error: 'ERP_LOGIN', reason: res.reason,
-      hint: '请在 BrowserOS neo 里重新登录 ERP（建议勾选「记住我」，令牌才能在其他标签页使用并自动续期）' } };
+      hint: '按 references/browseros-setup.md 的 ERP 登录准备检查 owned 页与会话；AI 可准备登录页和「记住我」，凭据与验证码由用户处理，恢复后只读核验' } };
     if (res.http === 404 || res.http === 405) return { fail: contractError(name, [{ path: url, expected: `${ep.method} 接口存在`, actual: `HTTP ${res.http}` }]) };
     if (res.http >= 500 || !res.json) return { fail: { ok: false, error: 'ERP_HTTP', endpoint: name, http: res.http } };
     const problems = [];
@@ -253,7 +315,6 @@ async (browser, pageId, req) => {
   };
 
   const extras = () => [...extraFields];
-  const op = req && req.op;
   // 仅返回业务字段；排序不影响快照比较，附件只保留 ID。
   const quoteFields = ['id', 'channel', 'shopName', 'supplierId', 'unitPrice', 'taxIncluded', 'taxRate',
     'itemCondition', 'leadTime', 'note', 'noStock', 'freeShipping', 'recommended', 'status'];
@@ -384,7 +445,7 @@ async (browser, pageId, req) => {
     const byId = new Map(data.items.map((i) => [i.id, i]));
     const problems = [];
     const skipped = skippedItems(byId, problems);
-    const body = { items: [], submit: !!submit };
+    const body = { items: [], submit };
     const touched = new Set();
     for (const [n, it] of (req.items || []).entries()) {
       const item = byId.get(it.itemId);
@@ -463,7 +524,7 @@ async (browser, pageId, req) => {
     if (d.fail) return d.fail;
     const r = await loadTask(req.taskId);
     if (r.fail) return r.fail;
-    const submitted = !!req.submitted;
+    const submitted = req.submitted;
     // 用写入前持久化的基线重建同一次 PUT 的完整计划，不能用读回的新值当期望。
     const baseline = req.expectedSnapshot;
     const before = { reviewRequired: baseline.reviewRequired, items: baseline.items.map((i) => ({ ...i, id: i.itemId,

@@ -4,7 +4,7 @@
 
 | 技能 | 当前版本 | 用途 |
 |---|---|---|
-| [烛龙智能询价](烛龙智能询价/SKILL.md) | 2.3.2 | 读取 ERP 任务 → 淘宝、1688 找店询价与跟进 → 提交回价；指定任务只做一个，未指定则逐个处理全部待处理任务 |
+| [烛龙智能询价](烛龙智能询价/SKILL.md) | 2.4.0 | 读取 ERP 任务 → 淘宝、1688 找店询价与跟进 → 提交回价；指定任务只做一个，未指定则逐个处理全部待处理任务 |
 
 维护者负责规则、设置、ERP 合同、平台适配、站点脚本和用户文档的一致性，以及相应验证。版本变化记入[技能 CHANGELOG](烛龙智能询价/CHANGELOG.md)；尚未实施的需求归入 [ROADMAP.md](ROADMAP.md)。
 
@@ -16,6 +16,7 @@
 |---|---|
 | 发布默认值：发询价前是否确认、询价店铺数、等待时间、轮询间隔、追问次数、防重复天数、价格异常标准、道谢说法 | `烛龙智能询价/settings.json`（详细说明见 `烛龙智能询价/references/settings.md`） |
 | 请求分流、红线、流程骨架、资源加载导航 | `烛龙智能询价/SKILL.md` |
+| BrowserOS 连接/启动、ERP 记住我、按域 helper 比对/注册与加载核验、获明确授权的旧注册清理 | `烛龙智能询价/references/browseros-setup.md` |
 | 主/子代理职责、客户端工具、暂停恢复、心跳与故障收尾 | `烛龙智能询价/references/execution.md` |
 | 主任务与平台记录格式、合并和提交输入协议 | `烛龙智能询价/references/run-protocol.md` |
 | ERP 操作调用、返回与错误处理 | `烛龙智能询价/references/erp-api.md` |
@@ -45,17 +46,9 @@
 
 个人配置、本机运行记录、ERP 地址、经验与报告的保存位置及创建时机见[手册数据目录](烛龙智能询价/使用手册.md#6-数据目录)，不随技能改名迁移。这些内部数据不进入公开源码，维护者收集时只合并适合公开的通用规则或脚本。
 
-技能运行后，会把新发现的页面事实写进用户电脑数据目录下的 `learnings/`，新做的站点脚本存在 BrowserOS neo 的站点脚本目录：
+技能运行后把亲自验证的页面事实写进用户数据目录 `learnings/`，可复用站点脚本通过 BrowserOS 的 `page.saveHelper` 按域保存。正常准备按[浏览器准备与 helper 注册](烛龙智能询价/references/browseros-setup.md)核对实际注册源码与内容 hash，已知旧官方自动同步、未知本机差异保留报告；从技能源码确定性适配并按需注册，下一次独立 `run` 读回内容并实际调用核验。7 个 helper 按 ERP 与启用平台相关域分段准备；保存或磁盘复制成功不代表已加载。
 
-| 系统 | 站点脚本目录 |
-|---|---|
-| Windows（已实测） | `%LOCALAPPDATA%\BrowserClaw\User Data\.browseros\.browserclaw\helpers\` |
-| macOS（推定，未实测） | `~/Library/Application Support/BrowserClaw/.browseros/.browserclaw/helpers/` |
-| Linux（推定，未实测） | `~/.config/BrowserClaw/.browseros/.browserclaw/helpers/` |
-
-macOS、Linux 的目录是按 Chromium 的惯例推定的。如果 `records.mjs install-helpers` 报找不到目录，就在该电脑上找到实际目录，用环境变量 `BROWSEROS_HELPERS_DIR` 指定，再把实际路径更新到本表和 `records.mjs`。维护者定期收集，把通用的合进技能（页面事实进 `platforms/`，脚本进 `helpers/`），升级版本后发放，再删掉经验文件里已合并的条目。
-
-BrowserOS neo 的站点脚本在正式询价时通过 `records.mjs install-helpers` 同步。内容相同的跳过；ERP 接口脚本按技能版本覆盖；电商脚本出现 `kept` 表示本机有不同内容、尚未覆盖，不能称为全部更新完成。维护者先比对、备份本机改动，确认后才用已有 `--force` 替换，不默认强制覆盖。
+`records.mjs install-helpers` 只保留为可选磁盘复制，不是正式询价的前置条件。维护者确需复制时核实当前机器真实路径；不把推测的 macOS/Linux 路径、个人绝对路径或环境变量设置作为普通用户方案。电商同名脚本内容不同先比对、备份，不能静默覆盖；`kept` 不代表已同步，`--force` 不默认使用。维护者定期收集通用经验和脚本，合入 `platforms/` / `helpers/` 并验证后发放，再清理已合并经验。
 
 每个任务结束，技能还会在数据目录下的 `reports/` 写一份实跑报告（`<YYYY-MM-DD>-<任务编号>.md`，含结果、各阶段耗时、问题、红线执行情况、建议），只存本机，用来分析效率和排查问题。报告里有店铺名和采购价，属于公司内部数据，收集时不要放进本仓库（本仓库公开）。
 
@@ -90,6 +83,8 @@ node "<技能目录>/scripts/records.mjs" stats 30
 | 本机记录、心跳、校验、合并、ERP 输入转换 | `node scripts/records.test.mjs`；必要时补对应失败场景 | 证明隔离环境下的确定性行为，不证明真实平台聊天成功 |
 | 配置合并、查看、校验、个人覆盖更新/恢复默认 | `node scripts/settings.mjs check`；`node scripts/settings.mjs json`；`node scripts/settings.test.mjs`；涉及 records 读取时运行 `node scripts/records.test.mjs` | 证明当前有效配置及隔离环境中的默认继承、稀疏覆盖、reset 指定项/全部恢复、参数拒绝和写入边界；不证明子代理模型可用或真实询价效果 |
 | ERP helper 或合同 | `node scripts/erp-api.test.mjs`；按上节在获授权的开发 ERP 核对受影响操作 | 离线覆盖模拟接口；只有实际测试环境的结果才能证明真实接口兼容 |
+| helper 提取、适配、CLI 入口或注册协议 | `node scripts/helpers.test.mjs`；改 helper 或适配包装时，按[域注册维护细则](烛龙智能询价/references/browseros-setup.md#按域注册与核验-helper)保留受影响 helper 的旧官方完整适配源码 hash，覆盖旧注册同步、定制保留及安装链接更新；核对当前 SDK 契约并实际跨 `run` 验证 | 离线适配与 API 文档不能代替真实 helper 加载/调用，文件复制或删除也不能证明运行时状态 |
+| 聊天 helper 对象筛选与拒绝边界 | `node scripts/chat-helpers.test.mjs`；再用对应平台本任务对象核验真实 DOM | 模拟 DOM 能证明空名、前缀/重复名、预览误命中和标题不符被拒绝；不能代替真实选择器、会话读取或发送验收 |
 | 平台页面、机器人/结束信号或 BrowserOS 工具调用 | 在对应平台和当前工具版本作获授权 UI 验证，记录已实测/未实测边界 | 页面读取测试不等于已验证消息发送、回复跟进或完整询价 |
 | 跨文件流程或运行协议 | 运行受影响的 records、ERP 离线测试，并检查入口、协议、规则、平台说明一致性；真实业务部分另行授权验证 | 离线通过不能表述为真实浏览器、ERP 或商家业务已通过 |
 

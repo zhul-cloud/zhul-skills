@@ -2,17 +2,17 @@
 
 本页页面定位与页面现象最近核对日期为 2026-10-15；标「未实测」的条目是按已核对页面行为推定的做法，首次照做时要核对结果，验证后去掉标记。淘宝改版后某条失效时，按实际情况操作，并在本机经验文件里记下（见 [run-protocol.md「本机经验」](../references/run-protocol.md#本机经验)）。
 
-技能自带的站点脚本在 `<技能目录>/helpers/`，由 `records.mjs install-helpers` 装进 BrowserOS neo。不发消息、不提交；搜索和预览只读，`imOpenAndRead` 会点开目标会话并清除未读状态。
+技能自带的站点脚本在 `<技能目录>/helpers/`，按[按域注册与核验 helper](../references/browseros-setup.md#按域注册与核验-helper)同时检查普通名和前缀名、比较并保留本机改进，确定性适配后在对应域 `saveHelper`，下一次 `run` 核验后调用。运行时名称带 `zhul_taobao_` 前缀，避免与 1688 同名 helper 相互覆盖；不能以新前缀绕过旧普通名的内容差异。连接故障由主代理恢复，平台代理不启动浏览器。脚本不发消息、不提交；搜索和预览只读，打开会话会清除未读状态。
 
 | 站点 | 脚本 | 作用 |
 |---|---|---|
-| s.taobao.com | `searchCandidates(browser, pageId, model)` | 搜索结果第一页的精简候选：`[排名, 商品ID, 标价, 付款人数, 型号匹配, 疑似非全新, 广告]` |
-| market.m.taobao.com | `imPreviews(browser, pageId, keys)` | 会话列表里名称包含 `keys` 的会话预览（名称、时间、最后一条、未读数），不点开 |
-| market.m.taobao.com | `imOpenAndRead(browser, pageId, key)` | 点开名称包含 `key` 的会话，核对聊天区标题，基于页面文本启发式抽取会话末尾最多 1500 字符，可能缺旧消息 |
+| s.taobao.com | `helpers["zhul_taobao_searchCandidates"](browser, pageId, model)` | 搜索结果第一页的精简候选：`[排名, 商品ID, 标价, 付款人数, 型号匹配, 疑似非全新, 广告]` |
+| market.m.taobao.com | `helpers["zhul_taobao_imPreviews"](browser, pageId, keys)` | 按完整列表名精确且唯一匹配的会话预览，不点开；不以预览文字匹配店铺 |
+| market.m.taobao.com | `helpers["zhul_taobao_imOpenAndRead"](browser, pageId, key)` | 按完整列表名唯一打开，核对当前 active 对象及标题身份后，只读消息项末尾最多 1500 字符；缺消息容器安全失败 |
 
 站点脚本只在 `run` 开始时、按当时已打开页面的域名加载：先打开搜索页或聊天页，**下一次** `run` 才能调用对应脚本。
 
-**聊天页上的脚本要手动加载**：BrowserOS 只给本代理名下的标签页加载脚本。点「客服」打开的聊天页在 BrowserOS 里显示为用户的标签页，在这类页面上直接调用 `helpers.imPreviews`、`helpers.imOpenAndRead` 会报 `not a function`。改用下面的方法（已实测可用）：用 `page.readHelper("imPreviews")` 读出脚本，只取其中 ```js 代码块，用 `(0, eval)("(" + 代码 + ")")` 得到函数，再按 `fn(browser, pageId, 参数)` 调用。
+点「客服」打开的本任务聊天页可能显示为用户页，先核实来源和归属；热加载不可用时的安全恢复及已保存源码调用见[域注册流程](../references/browseros-setup.md#按域注册与核验-helper)。不能只凭 `not a function` 判断脚本未安装，也不靠重复重启解决。
 
 所有登录、验证码、账号设置等人工协助统一按 [执行协议「暂停与恢复」](../references/execution.md#暂停与恢复)申请并消费 BrowserOS 人助；只中断受影响平台，不能记成无货。每次发送含更正先保存意图，读回确认后落盘；结果未知先查聊天证据。恢复先读停止期间的新回复，不重问已完成平台或真正业务结束的店。
 
@@ -24,14 +24,14 @@
 ## 2 搜索
 
 1. 在自己的标签页里用地址打开货源直达里的淘宝链接（`https://s.taobao.com/search?q=...`），不在 ERP 页面上点击，等商品列表出现。
-2. 调用 `searchCandidates` 读第一页候选。不要把整页文字或大段结果直接返回：结果太大时 BrowserOS 会写进文件、只给文件引用。
+2. 调用 `zhul_taobao_searchCandidates` 读第一页候选，第三参传原型号字符串。不要把整页文字或大段结果直接返回：结果太大时 BrowserOS 会写进文件、只给文件引用。
 3. 按第 3 节从这条链接的结果里挑店，家数按 `shopsPerLink`。挑完在同一个标签页打开下一条淘宝链接，同样挑店，直到所有淘宝链接都做完（见 [inquiry-rules.md「找店与挑店」](../references/inquiry-rules.md#找店与挑店)）；前面链接里判断过的商品 ID 直接跳过。所有链接都没有型号匹配的店，该型号在淘宝按无货处理。
 
 ## 3 挑店
 
 按 [inquiry-rules.md](../references/inquiry-rules.md) 第 3 节，结合页面特点：
 
-1. 去掉型号不匹配的（`型号匹配` 为 0）。
+1. 去掉 `型号匹配` 为 0 的；为 1 仅表示脚本按规范化文本或型号片段找到了候选，仍须在商品页逐字核对完整型号及后缀，不能当作精确匹配结论。
 2. 去掉广告位（`广告` 为 1）。
 3. 去掉标题写「基本全新」「二手」「拆机」「翻新」「99新」的（`疑似非全新` 为 1）。
 4. 去掉占位价：工控件常见 ¥18 至 ¥64 这类明显不可能的低价、标题以「议价」开头、0 人付款的挂牌。
@@ -53,15 +53,16 @@
 
 1. 聊天内容在同源 iframe 里，用 `iframe.contentDocument` 可以直接读文字，不需要截图；无障碍树里看不到聊天文字。
 2. 会话列表项是 `.conversation-item`（名称在 `.name`），当前会话的列表项带 `active`，聊天区标题是 `.conversation-header`。
-3. **发送前核对 `.conversation-header`** 包含目标店名或聊天对象名。不要用整页文字查找店名：会话列表里也有店名，容易把消息发给错误的店。
+3. **发送前核对当前对象**：`.conversation-header` 的身份须与目标完整聊天名或已核实的客服别名一致，当前 active 列表项须唯一且为目标完整列表名，不能用包含关系或整页文字放行。店铺名与客服名不同先依据本任务商品页进入的会话核实并记录映射，不猜别名。
 4. 输入框是「发送」按钮前面的那个元素。引用编号随新消息变化，每次发送前重新定位。
 5. 发送后读回：最后一条消息是刚发的内容，且标题仍是目标店。
 
 ## 6 查看回复
 
-- 用 `imPreviews` 看这几家的预览；预览变了，用 `imOpenAndRead` 点开读取末尾消息；恢复、未知发送或完整报价证据不足时另行只读核对对应会话，不能把截取缺失当成未发或无报价。
+- 用 `zhul_taobao_imPreviews` 看这几家的预览；预览变了，用 `zhul_taobao_imOpenAndRead` 点开读取末尾消息；恢复、未知发送或完整报价证据不足时另行只读核对对应会话，不能把截取缺失当成未发或无报价。
 - **只看预览不会把消息标为已读**，未读红点会一直留着，用户会以为 AI 漏看了。读到回复后，必须点开该会话一次。
 - 会话列表显示店名，聊天对象常是客服子账号（如 `tb485899055`、「yeshiwu:五佳电气批发」）。`run.json` 的 `contact` 记会话列表上显示的名字。
+- 聊天 helper 的字符串 `key` / `keys` 必须是本任务完整列表名。已核实标题别名时，打开函数可传 `{ contact: "完整列表名", headerName: "已核实标题身份" }`；不接受空名，零匹配/多匹配或标题不符不读取消息。当前选择器须在真实页面核验；`CHAT_DOM` / `CHAT_MESSAGES_UNAVAILABLE` 等失败不表示无回复，转按当前快照核对目标区域，不能退回整页截取。
 - 读整页文字时会带出账号的其他私人会话预览：只解析目标店铺的会话，其他内容不解析、不记录。
 
 ### 机器人回复
