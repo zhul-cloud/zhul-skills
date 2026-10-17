@@ -51,7 +51,7 @@ test('version reads the actual skill version and absolute directory without crea
     assert.equal(existsSync(join(f.home, '.zhul-trade-sourcing')), false);
 });
 
-test('explicit ERP home/deep-link addresses save origin and preserve other config/settings', (t) => {
+test('ERP hosts default to HTTP while full addresses retain scheme, origin and non-default ports', (t) => {
     const f = fixture(t);
     const dataDir = join(f.home, '.zhul-trade-sourcing');
     mkdirSync(dataDir);
@@ -61,8 +61,21 @@ test('explicit ERP home/deep-link addresses save origin and preserve other confi
     writeFileSync(settingsPath, '{"dedupeDays":5}\n');
     for (const [url, expected] of [
         ['http://localhost:8000/inquiry/my-tasks?done=false#section', 'http://localhost:8000'],
+        ['erp.example.invalid', 'http://erp.example.invalid'],
+        ['localhost:8000', 'http://localhost:8000'],
+        ['  ERP.Example.Invalid:8080/path?q=1#fragment  ', 'http://erp.example.invalid:8080'],
+        ['erp_internal:8000', 'http://erp_internal:8000'],
+        ['192.168.1.20:8000', 'http://192.168.1.20:8000'],
+        ['[::1]:8000', 'http://[::1]:8000'],
+        ['https://[2001:db8::1]:443/path', 'https://[2001:db8::1]'],
         ['https://erp.example.invalid:8443/', 'https://erp.example.invalid:8443'],
         ['https://erp.example.invalid:443/inquiry/my-tasks/', 'https://erp.example.invalid'],
+        ['https://erp.example.invalid/inquiry/my-tasks/', 'https://erp.example.invalid'],
+        ['HTTPS://erp.example.invalid:8443/path', 'https://erp.example.invalid:8443'],
+        ['HTTP://erp.example.invalid:80/path', 'http://erp.example.invalid'],
+        ['https://erp.example.invalid:80/path', 'https://erp.example.invalid:80'],
+        ['http://erp.example.invalid:443/path', 'http://erp.example.invalid:443'],
+        ['https://例子.测试:443/path', 'https://xn--fsqu00a.xn--0zwm56d'],
     ]) {
         assert.equal(f.json('init', '--erp', url).erpUrl, expected);
         assert.deepEqual(JSON.parse(readFileSync(configPath, 'utf8')), { erpUrl: expected, other: 'keep' });
@@ -70,23 +83,42 @@ test('explicit ERP home/deep-link addresses save origin and preserve other confi
     }
 });
 
-test('plain init does not silently migrate an existing ERP address or personal settings', (t) => {
+test('plain init returns effective origin without changing explicit HTTPS or stored address/settings bytes', (t) => {
     const f = fixture(t);
     const dataDir = join(f.home, '.zhul-trade-sourcing');
     mkdirSync(dataDir);
     const configPath = join(dataDir, 'config.json');
     const settingsPath = join(dataDir, 'settings.json');
-    const config = '{"erpUrl":"https://old.example.invalid/inquiry/my-tasks"}\n';
-    writeFileSync(configPath, config);
     writeFileSync(settingsPath, '{"dedupeDays":5}\n');
-    assert.equal(f.json('init').erpUrl, 'https://old.example.invalid/inquiry/my-tasks');
-    assert.equal(readFileSync(configPath, 'utf8'), config);
-    assert.equal(readFileSync(settingsPath, 'utf8'), '{"dedupeDays":5}\n');
+    for (const [stored, expected] of [
+        ['https://old.example.invalid/inquiry/my-tasks', 'https://old.example.invalid'],
+        ['https://old.example.invalid:443/path?x#y', 'https://old.example.invalid'],
+        ['https://old.example.invalid:8443/path', 'https://old.example.invalid:8443'],
+        ['localhost:8000', 'http://localhost:8000'],
+        ['[::1]:8000/path', 'http://[::1]:8000'],
+        ['', null], [null, null],
+    ]) {
+        const config = JSON.stringify({ erpUrl: stored, other: 'keep' }) + '\n';
+        writeFileSync(configPath, config);
+        assert.equal(f.json('init').erpUrl, expected);
+        assert.equal(readFileSync(configPath, 'utf8'), config);
+        assert.equal(readFileSync(settingsPath, 'utf8'), '{"dedupeDays":5}\n');
+    }
+    writeFileSync(configPath, '{"other":"keep"}\n');
+    assert.equal(f.json('init').erpUrl, null);
+    assert.equal(readFileSync(configPath, 'utf8'), '{"other":"keep"}\n');
 });
 
-for (const args of [['--erp'], ['--erp', '--force'], ['--erp', 'localhost:8000'],
+for (const args of [['--erp'], ['--erp', '--force'], ['--erp', ''], ['--erp', '  '],
     ['--erp', 'not a URL'], ['--erp', 'file:///tmp/erp'], ['--erp', 'ftp://example.invalid'],
     ['--erp', 'https://user:secret@example.invalid'], ['--erp', 'http://localhost:99999'],
+    ...['http:example.invalid', 'https:/example.invalid', '//example.invalid', 'http:///example.invalid',
+        'http://', 'https://http://example.invalid', 'mailto:erp@example.invalid', 'erp.invalid:',
+        'erp.invalid:-1', 'erp.invalid:65536', 'erp.invalid:80abc', 'erp.invalid:1.5',
+        'erp.invalid\\path', 'http://erp.invalid/a b', 'http://erp.invalid/a\nb',
+        'user:secret@erp.invalid', 'http://@erp.invalid', '%65rp.invalid', 'erp..invalid', '.',
+        '[not-ip]:8000', '[::1', '::1', '127.1', '2130706433', '0177.0.0.1', '0x7f000001',
+        '192.168.001.1', '999.168.1.1'].map((value) => ['--erp', value]),
     ['--erp', 'https://example.invalid', 'extra']]) {
     test(`invalid init address rejects before creating directories or replacing config: ${args.map((arg) => arg.includes('secret') ? '<URL with credentials>' : arg).join(' ')}`, (t) => {
         const f = fixture(t);
@@ -100,10 +132,30 @@ for (const args of [['--erp'], ['--erp', '--force'], ['--erp', 'localhost:8000']
         const out = f.cli('init', ...args);
         assert.notEqual(out.status, 0);
         assert.equal(out.stdout, '');
+        assert.equal(out.stderr.includes('secret'), false);
         assert.equal(readFileSync(configPath, 'utf8'), config);
         for (const name of ['runs', 'reports', 'learnings']) assert.equal(existsSync(join(dataDir, name)), false);
     });
 }
+
+test('bad stored addresses fail before initialization, and explicit valid input can correct them', (t) => {
+    const f = fixture(t);
+    const dataDir = join(f.home, '.zhul-trade-sourcing');
+    mkdirSync(dataDir);
+    const configPath = join(dataDir, 'config.json');
+    for (const value of [false, 0, 8000, {}, [], ' ', 'ftp://erp.invalid', 'https://user:secret@erp.invalid']) {
+        const before = JSON.stringify({ erpUrl: value, other: 'keep' });
+        writeFileSync(configPath, before);
+        const result = f.cli('init');
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /ERP 地址无效/);
+        assert.equal(result.stderr.includes('secret'), false);
+        assert.equal(readFileSync(configPath, 'utf8'), before);
+        for (const name of ['runs', 'reports', 'learnings']) assert.equal(existsSync(join(dataDir, name)), false);
+    }
+    assert.equal(f.json('init', '--erp', 'localhost:8000').erpUrl, 'http://localhost:8000');
+    assert.deepEqual(JSON.parse(readFileSync(configPath, 'utf8')), { erpUrl: 'http://localhost:8000', other: 'keep' });
+});
 
 test('version follows a copied script in a path with spaces and needs no settings', (t) => {
     const f = fixture(t);
@@ -288,6 +340,32 @@ test('disk export preserves differing platform files and refreshes ERP without c
     const unchanged = invoke();
     assert.equal(unchanged.status, 0, unchanged.stderr);
     assert.equal(JSON.parse(unchanged.stdout).unchanged.length, 7);
+});
+
+test('disk export uses the same ERP host normalization and rejects invalid stored addresses before copying', (t) => {
+    const f = fixture(t);
+    const helpersDir = join(f.root, 'exported-helpers');
+    const dataDir = join(f.home, '.zhul-trade-sourcing');
+    mkdirSync(helpersDir);
+    mkdirSync(dataDir);
+    const configPath = join(dataDir, 'config.json');
+    const invoke = () => spawnSync(process.execPath, [script, 'install-helpers'], {
+        env: { ...process.env, HOME: f.home, USERPROFILE: f.home, BROWSEROS_HELPERS_DIR: helpersDir }, encoding: 'utf8', timeout: 5000,
+    });
+    const invalid = '{"erpUrl":"ftp://erp.invalid","other":true}\n';
+    writeFileSync(configPath, invalid);
+    assert.notEqual(invoke().status, 0);
+    assert.equal(existsSync(join(helpersDir, 's.taobao.com')), false);
+    assert.equal(readFileSync(configPath, 'utf8'), invalid);
+    for (const address of ['erp_internal:8000', 'https://erp_internal:443/path']) {
+        const stored = JSON.stringify({ erpUrl: address, other: true });
+        writeFileSync(configPath, stored);
+        const result = invoke();
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(JSON.parse(result.stdout).runtimeLoaded, false);
+        assert.match(readFileSync(join(helpersDir, 'erp_internal', 'erpApi.md'), 'utf8'), /^host: "erp_internal"$/m);
+        assert.equal(readFileSync(configPath, 'utf8'), stored);
+    }
 });
 
 test('finish keeps unsubmitted prices, freeShipping and original reuse time', (t) => {

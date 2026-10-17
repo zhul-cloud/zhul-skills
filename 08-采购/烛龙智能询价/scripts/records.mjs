@@ -25,6 +25,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
+import { isIP } from 'node:net';
 
 const SKILL_DIR = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DATA_DIR = join(homedir(), '.zhul-trade-sourcing');
@@ -91,30 +92,49 @@ function readJsonl(path) {
     return readFileSync(path, 'utf8').split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
 }
 
+function normalizeErpUrl(value) {
+    const invalid = () => { throw new Error('ERP 地址无效：请输入域名、localhost 或 IP，可带端口；未填协议默认 http://，完整地址支持 HTTP(S)，不允许凭据、内部空白、反斜线或其他协议'); };
+    if (typeof value !== 'string') invalid();
+    const input = value.trim();
+    if (!input || /[\s\u0000-\u001f\u007f\\]/u.test(input)) invalid();
+    // 缺协议默认 HTTP，完整地址保留原协议；不猜补端口或降级 HTTPS。
+    const protocol = input.match(/^(https?):\/\//i)?.[1].toLowerCase() ?? 'http';
+    const authority = input.replace(/^https?:\/\//i, '').split(/[/?#]/, 1)[0];
+    const address = authority.startsWith('[')
+        ? authority.match(/^\[([^\]]+)\](?::(\d+))?$/)
+        : authority.match(/^([^:@%]+)(?::(\d+))?$/);
+    if (!address || (authority.startsWith('[') && isIP(address[1]) !== 6)) invalid();
+    let url;
+    try { url = new URL(`${protocol}://${authority}`); } catch { invalid(); }
+    if (!authority.startsWith('[')) {
+        // 保留内网单标签/下划线主机；拒绝空标签、主机特殊符号及缩写/进制 IPv4 误解析。
+        const host = url.hostname.replace(/\.$/, '');
+        if (!/^[a-z\d_-]+(?:\.[a-z\d_-]+)*$/i.test(host) || host.length > 253
+            || host.split('.').some((label) => label.length > 63)
+            || (isIP(host) === 4 && isIP(address[1]) !== 4)) invalid();
+    }
+    return url.origin;
+}
+
 function init(args) {
     let erpUrl;
     if (args.length) {
         if (args.length !== 2 || args[0] !== '--erp' || !args[1] || args[1].startsWith('--')) {
-            throw new Error('用法：init [--erp <ERP地址>]；--erp 需要 HTTP(S) 网址');
+            throw new Error('用法：init [--erp <ERP地址>]；--erp 可填域名或 IP（可带端口），未填协议默认 http://，完整地址保留 HTTP(S)');
         }
-        let url;
-        try { url = new URL(args[1]); } catch { throw new Error('ERP 地址必须是有效的 HTTP(S) 网址'); }
-        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
-            throw new Error('ERP 地址必须是无凭据的 HTTP(S) 网址');
-        }
-        // 接口使用 /api 绝对路径；首页和任务深链接都规范化为 origin，保留非默认端口。
-        erpUrl = url.origin;
+        erpUrl = normalizeErpUrl(args[1]);
     }
-    // 显式地址校验完成后才允许创建目录或写配置。
+    const config = readConfig();
+    const effectiveUrl = erpUrl ?? (config.erpUrl == null || config.erpUrl === '' ? null : normalizeErpUrl(config.erpUrl));
+    // 地址校验完成后才允许创建目录或写配置；无参只返回有效 origin，不迁移旧配置。
     mkdirSync(RUNS, { recursive: true });
     mkdirSync(LEARNINGS, { recursive: true });
     mkdirSync(REPORTS, { recursive: true });
-    const config = readConfig();
     if (erpUrl !== undefined) {
         config.erpUrl = erpUrl;
         writeFileSync(CONFIG, JSON.stringify(config, null, 2));
     }
-    console.log(JSON.stringify({ dataDir: DATA_DIR, erpUrl: config.erpUrl ?? null }, null, 2));
+    console.log(JSON.stringify({ dataDir: DATA_DIR, erpUrl: effectiveUrl }, null, 2));
 }
 
 function installHelpers(args) {
@@ -123,6 +143,8 @@ function installHelpers(args) {
     if (!HELPERS_DIR || !existsSync(HELPERS_DIR)) {
         throw new Error('install-helpers 仅供维护者导出文件，需要显式 BROWSEROS_HELPERS_DIR 指向已有目录。copied 不等于 runtimeLoaded；正式准备请按 references/browseros-setup.md 使用 page.saveHelper 注册并在下一次 run 验证。');
     }
+    const configuredUrl = readConfig().erpUrl;
+    const erpUrl = configuredUrl == null || configuredUrl === '' ? null : normalizeErpUrl(configuredUrl);
     const src = join(SKILL_DIR, 'helpers');
     const result = { copied: [], unchanged: [], kept: [], runtimeLoaded: false,
         note: '仅导出 Markdown 文件；copied 不等于 runtimeLoaded。须按 browseros-setup.md 生成适配源码、page.saveHelper 注册并在下一次 run 验证。' };
@@ -144,7 +166,6 @@ function installHelpers(args) {
         }
     }
     // ERP 接口脚本：ERP 地址每台电脑不同，按 config.json 的 erpUrl 装进对应域名；接口约定以技能版本为准，总是覆盖
-    const erpUrl = readConfig().erpUrl;
     if (!erpUrl) {
         result.erp = '未配置 ERP 地址，本次仅导出电商文件；ERP 运行时注册按 browseros-setup.md 使用已有 erpUrl';
     } else {
