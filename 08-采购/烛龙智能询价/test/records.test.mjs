@@ -8,18 +8,21 @@ import { fileURLToPath } from 'node:url';
 const testDir = dirname(fileURLToPath(import.meta.url));
 const script = fileURLToPath(new URL('../scripts/records.mjs', import.meta.url));
 const now = () => new Date().toISOString();
+const version = readFileSync(fileURLToPath(new URL('../SKILL.md', import.meta.url)), 'utf8').match(/^version: (.+)$/m)[1].trim();
+const meta = () => ({ schemaVersion: 1, runId: 'fixture-run', skillVersion: version, revision: 0, createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' });
+const facts = value => { const out = { ...value }; for (const k of ['schemaVersion','runId','skillVersion','revision','eventSeq','createdAt','updatedAt']) delete out[k]; return out; };
 const ago = (minutes) => new Date(Date.now() - minutes * 60000).toISOString();
 const quote = (itemId = 11, extra = {}) => ({ itemId, price: 100, taxIncluded: false, ...extra });
-const shop = (extra = {}) => ({ platform: '淘宝', shop: '测试店', itemIds: [11], sentAt: ago(1), status: '已回复', quotes: [quote()], ...extra });
-const run = (extra = {}) => ({ task: 'IQ-TEST', taskId: 1, items: [{ itemId: 11, model: 'MODEL-A' }, { itemId: 22, model: 'MODEL-B' }], platforms: ['淘宝', '1688'], platformStates: { '淘宝': 'completed', '1688': 'completed' }, shops: [], noStock: [], submitted: false, ...extra });
-const part = (platform = '淘宝', extra = {}) => ({ platform, shops: [], noStock: [], stages: { repliesDone: now() }, ...extra });
+const shop = (extra = {}) => { if (extra.pendingMessage) extra.pendingMessage.messageId ??= 'fixture-message'; return { platform: '淘宝', shop: '测试店', itemIds: [11], sentAt: ago(1), status: '已回复', quotes: [quote()], ...extra }; };
+const messageIds = value => { for (const shop of value.shops ?? []) if (shop.pendingMessage) shop.pendingMessage.messageId ??= 'fixture-message'; return value; };
+const run = (extra = {}) => messageIds({ ...meta(), eventSeq: 1, task: 'IQ-TEST', taskId: 1, items: [{ itemId: 11, model: 'MODEL-A' }, { itemId: 22, model: 'MODEL-B' }], platforms: ['淘宝', '1688'], platformStates: { '淘宝': 'completed', '1688': 'completed' }, shops: [], noStock: [], submitted: false, ...extra });
+const part = (platform = '淘宝', extra = {}) => messageIds({ ...meta(), platform, shops: [], noStock: [], stages: { repliesDone: now() }, ...extra });
 
 function fixture(t, value = run()) {
     const root = mkdtempSync(join(testDir, '.records-test-'));
     const home = join(root, 'home');
-    const dir = join(root, 'run');
+    const dir = join(home, '.zhul-trade-sourcing', 'runs', 'IQ-TEST-fixture');
     mkdirSync(home);
-    mkdirSync(dir);
     const copiedSkill = join(root, 'skill-source');
     mkdirSync(copiedSkill);
     cpSync(join(dirname(script), '.'), join(copiedSkill, 'scripts'), { recursive: true });
@@ -40,10 +43,10 @@ function fixture(t, value = run()) {
     const probe = spawnSync(process.execPath, ['-e', 'process.stdout.write(require("node:os").homedir())'], { env, encoding: 'utf8' });
     assert.equal(probe.status, 0);
     assert.equal(resolve(probe.stdout), resolve(home));
-    const write = (name, value) => writeFileSync(join(dir, name), typeof value === 'string' ? value : JSON.stringify(value));
-    write('run.json', value);
+    const ensure = () => { if (!existsSync(dir)) { stamp(); mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, 'run.json'), JSON.stringify(value)); } };
+    const write = (name, value) => { ensure(); writeFileSync(join(dir, name), typeof value === 'string' ? value : JSON.stringify(value)); };
     const cli = (...args) => {
-        if (['install-helpers', 'new-run', 'open-run', 'skip', 'manual', 'beat', 'merge', 'finish'].includes(args[0])) stamp();
+        if (['install-helpers', 'new-run', 'open-run', 'skip', 'manual', 'beat', 'merge', 'finish', 'check', 'erp-items', 'watch'].includes(args[0])) stamp();
         return spawnSync(process.execPath, [copiedScript, ...args], { env, encoding: 'utf8', timeout: 15000 });
     };
     const ok = (...args) => {
@@ -53,7 +56,7 @@ function fixture(t, value = run()) {
     };
     const json = (...args) => JSON.parse(ok(...args));
     const lines = (name) => readFileSync(join(home, '.zhul-trade-sourcing', name), 'utf8').trim().split('\n').map(JSON.parse);
-    return { root, home, dir, script: copiedScript, stamp, path: join(dir, 'run.json'), write, cli, ok, json, lines };
+    return { root, home, get dir() { ensure(); return dir; }, script: copiedScript, stamp, get path() { ensure(); return join(dir, 'run.json'); }, write, cli, ok, json, lines };
 }
 
 test('version reads the actual skill version and absolute directory without creating data', (t) => {
@@ -106,7 +109,7 @@ test('同run恢复保留identity及未知发送/追问/停止断点，不写新�
     const before = readFileSync(path, 'utf8');
     const restored = f.json('open-run', 'IQ-IDENTITY');
     assert.equal(restored.resumed, true); assert.equal(restored.runDir, dir); assert.equal(restored.stopAfterTask, true);
-    assert.equal(readFileSync(path, 'utf8'), before);
+    assert.deepEqual(facts(JSON.parse(readFileSync(path, 'utf8'))), facts(JSON.parse(before)));
     assert.deepEqual(JSON.parse(before).shops[0].identity, identity);
     assert.equal(JSON.parse(before).shops[0].pendingMessage.state, 'pending');
     assert.notEqual(f.cli('erp-items', path).status, 0);
@@ -256,7 +259,7 @@ test('recent and watch read shared personal overrides without changing ERP confi
     assert.equal(out.running.length, 2);
     assert.equal(readFileSync(erpPath, 'utf8'), '{"erpUrl":"https://example.invalid"}\n');
     assert.deepEqual(JSON.parse(readFileSync(personalPath, 'utf8')), { dedupeDays: 0, subagents: { stallMinutes: 10 } });
-    for (const name of ['runs', 'learnings', 'reports']) assert.equal(existsSync(join(dataDir, name)), false);
+    for (const name of ['learnings', 'reports']) assert.equal(existsSync(join(dataDir, name)), false);
     writeFileSync(personalPath, '{"dedupeDays":-1}');
     const result = f.cli('recent', 'MODEL-A');
     assert.notEqual(result.status, 0);
@@ -292,8 +295,9 @@ test('manual/skip/finish preserve queue and submission history', (t) => {
     f.ok('skip', 'IQ-CANCEL', '已取消');
     assert.equal(f.json('processed', 'IQ-TEST').processed, false);
     const next = f.json('next', 'IQ-TEST', 'IQ-CANCEL', 'IQ-NEW');
-    assert.equal(next.next, 'IQ-NEW');
-    assert.match(next.skipped[0].reason, /人工/);
+    assert.equal(next.next, 'IQ-TEST');
+    assert.equal(next.resumeRun, f.dir);
+    assert.equal(f.json('next', 'IQ-CANCEL', 'IQ-NEW').next, 'IQ-NEW');
     f.write('run.json', run({ shops: [shop()], submitted: true }));
     f.ok('finish', f.path);
     assert.equal(f.json('processed', 'IQ-TEST').processed, true);
@@ -826,7 +830,7 @@ test('confirmed replies require sending evidence and retain replyAt after later 
         assert.equal(checkpoint.shops[0].followUpAt, followUpAt);
         const stored = readFileSync(join(dir, 'run.json'), 'utf8');
         f.json('open-run', 'IQ-REPLY');
-        assert.equal(readFileSync(join(dir, 'run.json'), 'utf8'), stored);
+        assert.deepEqual(facts(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8'))), facts(JSON.parse(stored)));
     }
     f.ok('finish', join(dir, 'run.json'));
     assert.equal(f.lines('records.jsonl')[0].replyAt, replyAt);
@@ -873,7 +877,7 @@ test('new-run resumes the same directory and open-run keeps deadline, messages a
     assert.equal(result.needsErpReconcile, true);
     assert.equal(result.stopAfterTask, true);
     assert.deepEqual(result.completedPlatforms, ['淘宝']);
-    assert.equal(readFileSync(join(dir, 'run.json'), 'utf8'), before);
+    assert.deepEqual(facts(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8'))), facts(JSON.parse(before)));
     assert.deepEqual(JSON.parse(readFileSync(join(dir, 'run-淘宝.json'), 'utf8')), taobao);
     assert.deepEqual(JSON.parse(readFileSync(join(dir, 'run-1688.json'), 'utf8')).shops[0].pendingMessage, pendingMessage);
     f.ok('manual', 'IQ-RESUME', '登录失败');
@@ -905,7 +909,7 @@ test('resume fails closed for ambiguous, corrupt or uninitialized missing record
     writeFileSync(join(second, 'run.json'), '{');
     assert.notEqual(f.cli('new-run', 'IQ-AMBIGUOUS').status, 0);
     rmSync(join(second, 'run.json'));
-    assert.notEqual(f.cli('new-run', 'IQ-AMBIGUOUS').status, 0);
+    assert.equal(f.json('open-run', 'IQ-AMBIGUOUS').runDir, first);
 });
 
 test('submitted and simulated runs never become new inquiry or business archives', (t) => {
@@ -1080,7 +1084,7 @@ test('partial merge preserves pending human help while allowing local draft and 
     assert.equal(resumed.runDir, dir);
     assert.equal(resumed.resumed, true);
     assert.equal(resumed.stopAfterTask, true);
-    assert.equal(readFileSync(join(dir, 'run.json'), 'utf8'), before);
+    assert.deepEqual(facts(JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8'))), facts(JSON.parse(before)));
     const current = JSON.parse(before);
     assert.deepEqual(current.platformHumanHelp['淘宝'], humanHelp);
     assert.deepEqual(current.shops[0].pendingMessage, pendingMessage);

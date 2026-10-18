@@ -4,7 +4,7 @@
 
 | 技能 | 当前版本 | 用途 |
 |---|---|---|
-| [烛龙智能询价](烛龙智能询价/SKILL.md) | 2.8.0 | 淘宝、1688询价、跟进与ERP回价，支持指定任务或批量处理（执行入口见技能说明） |
+| [烛龙智能询价](烛龙智能询价/SKILL.md) | 2.9.0 | 淘宝、1688询价、跟进与ERP回价，支持指定任务或批量处理（执行入口见技能说明） |
 
 维护者负责规则、设置、ERP 合同、平台适配、站点脚本和用户文档的一致性，以及相应验证。版本变化记入[技能 CHANGELOG](烛龙智能询价/CHANGELOG.md)；尚未实施的需求归入 [ROADMAP.md](ROADMAP.md)。
 
@@ -18,7 +18,7 @@
 | 请求分流、红线、流程骨架、资源加载导航 | `烛龙智能询价/SKILL.md` |
 | BrowserOS 连接/启动、ERP 记住我、按域 helper 比对/注册与加载核验、获明确授权的旧注册清理 | `烛龙智能询价/references/browseros-setup.md` |
 | 主/子代理职责、主代理信息补充/业务选择及续跑、客户端工具、浏览器暂停恢复、心跳与故障收尾 | `烛龙智能询价/references/execution.md` |
-| 主任务与平台记录格式、合并和提交输入协议 | `烛龙智能询价/references/run-protocol.md` |
+| 主任务与平台记录格式、受控保存、每日时间线、合并和提交输入协议 | `烛龙智能询价/references/run-protocol.md` |
 | ERP 操作调用、返回与错误处理 | `烛龙智能询价/references/erp-api.md` |
 | 挑店标准、话术、回复判断、货况货期对照 | `烛龙智能询价/references/inquiry-rules.md` |
 | 各平台页面操作、机器人标记、结束信号 | `烛龙智能询价/platforms/<平台>.md`（目前有 `taobao.md`、`1688.md`；新平台的说明文件经实跑验证后放进来，该平台即启用） |
@@ -81,7 +81,7 @@ node "<技能目录>/scripts/records.mjs" stats 30
 | 改动范围 | 最小验证 | 能证明与不能证明 |
 |---|---|---|
 | 用户文档、名称、路径、加载导航 | 检查相对链接与锚点、版本一致性、安装和 CLI 示例与实际接口一致；只读 `node scripts/records.mjs version` | 能核对文档和本地版本，不代表安装到真实用户环境或远程已发布 |
-| 本机记录、心跳、校验、合并、ERP 输入转换 | `node test/records.test.mjs`；必要时补对应失败场景 | 证明隔离环境下的确定性行为，不证明真实平台聊天成功 |
+| 本机记录、受控断点、每日时间线、心跳、校验、合并、ERP 输入转换 | `node test/records.test.mjs`；受控保存及恢复另跑 `node test/run-store.test.mjs` | 用隔离数据核对元数据、事件关联、revision 冲突、并发保存、幂等重试和异常恢复；不证明真实平台聊天成功或未观测的业务信号已执行 |
 | 个人数据版本生命周期、重建范围及 CLI 写入口守卫 | `node test/data-lifecycle.test.mjs`，并运行受影响的 records、settings、contacts 回归 | 用隔离主目录核对首次/升级重建、同版保留、降级及坏标记拒绝、发布内容先校验、锁和链接/重解析删除边界；不清真实个人目录，不证明旧执行者会被自动停止或所有业务写入均有路径沙箱 |
 | 配置合并、查看、校验、个人覆盖更新/恢复默认 | `node scripts/settings.mjs check`；`node scripts/settings.mjs json`；`node test/settings.test.mjs`；涉及 records 读取时运行 `node test/records.test.mjs` | 证明当前有效配置及隔离环境中的默认继承、稀疏覆盖、reset 指定项/全部恢复、参数拒绝和写入边界；不证明子代理模型可用或真实询价效果 |
 | ERP helper 或合同 | `node test/erp-api.test.mjs`；按上节在获授权的开发 ERP 核对受影响操作 | 离线覆盖模拟接口；只有实际测试环境的结果才能证明真实接口兼容 |

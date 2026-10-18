@@ -1,7 +1,7 @@
 ---
 name: 烛龙智能询价
 description: 为 ERP「我的询价」执行淘宝、1688 找店询价、跟进回复和提交回价；用于用户委托采购询价任务、明确调用本技能时的 start/询价/开始/处理或 IQ 任务编号，以及本技能用法/版本/更新/统计/settings/配置查看与修改请求。普通商品咨询、比价和其他采购操作不触发；用法、如何开始、版本、更新、统计和配置请求只走对应分支，不启动询价。
-version: 2.8.0
+version: 2.9.0
 ---
 
 # 烛龙智能询价
@@ -34,7 +34,7 @@ version: 2.8.0
 - 输入：可选任务编号；ERP 提供的型号 ID、型号、数量/单位、描述、系统话术、货源直达链接和截止信息。型号 ID 及任务内容原样使用，不自行扩展需求。
 - 输出：仅本任务的 ERP 报价/无货（或明确未完成、需人工处理），本机运行记录、实跑报告、任务汇报与批次总汇报。
 - 仅询问有平台说明的淘宝和 1688；货源直达中的闲鱼暂不询价，没有说明的平台不凭经验询问。
-- `<技能目录>` 为本文件目录；`<数据目录>` 为 `settings.mjs json` 或 `records.mjs init` 返回的 `dataDir`，完整系统路径见[手册数据目录](使用手册.md#6-数据目录)；`<本次目录>` 为 `open-run` 返回的 runDir（兼容 new-run 的路径输出）。
+- `<技能目录>` 为本文件目录；`<数据目录>` 为 `settings.mjs json` 或 `records.mjs init` 返回的 `dataDir`，完整系统路径见[手册数据目录](使用手册.md#6-数据目录)；`<本次目录>` 为 `open-run` 返回的 runDir（兼容 new-run 的路径输出）。主/平台记录统一通过[受控保存与事件](references/run-protocol.md#受控保存与事件)落盘，不直接改权威 JSON；版本、任务、型号与关键事件保存在本机运行记录和每日时间线。
 - 可调参数的发布默认值在 [settings.json](settings.json)，个人覆盖、合并规则与修改方法见 [settings.md](references/settings.md)；正式询价按[准备第 2 步](#准备)读取有效配置，并按需查相关项。本机经验仅是已验证页面事实，不能覆盖红线和业务规则。
 
 ## 按角色与阶段读取
@@ -45,9 +45,9 @@ version: 2.8.0
 |---|---|
 | 仅说明或统计 | 本文「请求分流」及所需手册章节；不读执行引用 |
 | 配置查看、修改或解释（含 ERP 地址） | 本文「请求分流」及所需的 [settings.md](references/settings.md)；需补充信息/选择时只另读 [execution.md「主代理提问与续跑」](references/execution.md#主代理提问与续跑)，不加载询价主流程 |
-| 主代理：准备、取任务、填报 | 本文；[数据生命周期](references/data-lifecycle.md)；[execution.md「主代理提问与续跑」](references/execution.md#主代理提问与续跑)；[browseros-setup.md](references/browseros-setup.md)；[erp-api.md](references/erp-api.md)；[run-protocol.md](references/run-protocol.md)的本地防重复、主记录、汇报/报告；业务规则第 6、7 节用于报价整理/提醒 |
+| 主代理：准备、取任务、填报 | 本文；[数据生命周期](references/data-lifecycle.md)；[execution.md「主代理提问与续跑」](references/execution.md#主代理提问与续跑)；[browseros-setup.md](references/browseros-setup.md)；[erp-api.md](references/erp-api.md)；[run-protocol.md](references/run-protocol.md)的受控保存、时间线、本地防重复、主记录、汇报/报告；业务规则第 6、7 节用于报价整理/提醒 |
 | 主代理：需要并行 | 另读 [execution.md](references/execution.md)共享协作、暂停、监控、故障/合并/收尾和当前客户端章节；不必读另一客户端映射 |
-| 平台子代理 | 本文关键红线；[browseros-setup.md「按域注册与核验 helper」](references/browseros-setup.md#按域注册与核验-helper)；[业务规则](references/inquiry-rules.md)；[记录协议](references/run-protocol.md)的主字段和平台记录；本次设置及自己的平台说明/本机经验；首次绑定或跨运行映射时按需读[身份映射](references/identity-mapping.md)；[execution.md](references/execution.md)中与自己相关的协作/暂停和客户端章节。不能触 ERP，不启动浏览器 |
+| 平台子代理 | 本文关键红线；[browseros-setup.md「按域注册与核验 helper」](references/browseros-setup.md#按域注册与核验-helper)；[业务规则](references/inquiry-rules.md)；[记录协议](references/run-protocol.md)的受控保存、时间线、主字段和平台记录；本次设置及自己的平台说明/本机经验；首次绑定或跨运行映射时按需读[身份映射](references/identity-mapping.md)；[execution.md](references/execution.md)中与自己相关的协作/暂停和客户端章节。不能触 ERP，不启动浏览器 |
 | 单代理执行 | 主代理所需内容、完整业务规则、本次启用平台的说明/经验；[execution.md](references/execution.md)的主代理提问、单代理、收尾、停止/继续及遇到的暂停/故障章节 |
 | helper 缺失/需同步、维护或针对 helper 排错 | 按 [browseros-setup.md](references/browseros-setup.md#按域注册与核验-helper)按需读对应 `helpers/` 源码；ERP 接口地址/参数/响应 CONTRACT 以 [erpApi helper](helpers/_erp/erpApi.md)为维护对象 |
 
@@ -112,7 +112,7 @@ version: 2.8.0
 完整操作、状态表和字段说明按上表在对应阶段读取，不以骨架替代细则。
 
 1. **选择运行方式**：`subagents.enabled=true`、本次至少两个平台且客户端支持子代理时，按 [execution.md](references/execution.md)每平台一名执行者；否则单代理交替推进。主代理读任务、去重、ERP 提交和收尾；平台代理只写自己的平台文件、负责本平台找店/会话，不直接向聊天用户提问、不写主文件、不执行 `finish`；浏览器技术人助按执行协议申请并上报主代理。指定模型或工具不可用时按执行协议说明、停止并核实旧执行者后处理，不能形成两名执行者。
-2. **选任务、读任务**：按 [erp-api.md「选任务与读取」](references/erp-api.md#选任务与读取)查 `list`，按用户指定编号或 `next` 选任务，`open-run` 优先恢复同 IQ 原未完目录，新任务才建目录；首次 `task` 结果写主记录并持久化 ERP `snapshot` 基线；恢复空骨架可补初始化，有实际断点则不覆盖。取消、已回过价、只读型号按规则跳过；原草稿保留。
+2. **选任务、读任务**：按 [erp-api.md「选任务与读取」](references/erp-api.md#选任务与读取)查 `list`，按用户指定编号或 `next` 选任务，`open-run` 优先恢复同 IQ 原未完目录，新任务才建目录；首次 `task` 结果通过 `checkpoint` 保存主记录及 ERP `snapshot` 基线；保留工具生成的运行身份和版本，恢复空骨架可补初始化，有实际断点则不覆盖。取消、已回过价、只读型号按规则跳过；原草稿保留。
 3. **本地防重复**：按 [run-protocol.md「本地防重复」](references/run-protocol.md#本地防重复)逐型号查 `recent`。有效旧价沿用原备注/包邮信息/原时间，其余已问店跳过。沿用数据写对应平台文件；单代理同样如此。恢复当前 run 先读断点，不能把本次已发店当历史无价店另找一遍。
 4. **找店、询价与跟进**：按 [inquiry-rules.md「执行挑店与会话」](references/inquiry-rules.md#8-执行挑店与会话)与自己的平台说明操作。**每个平台先挑完本任务所有型号、所有链接，再按店合并第一条询价**；每店首次消息仅一条，追问按整店限额。先处理回复再推进发送，独立计时，暂停不重置计时；保留部分报价。
 5. **截止和异常**：挑店、每次发送前、恢复时检查 `deadline`；到截止前 5 分钟停止挑新店和一切商家消息，按已有信息结束。未完成挑店/发送、卡住或记录损坏用 `incompleteItems.reason`，真实无货用 `noStock.note`，二者不能混用。有有效报价先存本地/草稿；平台中断时禁止正式提交。仅全部平台真实完成或明确跳过后，才按既有规则提交可用结果，无价未完成转人工，不标无货。

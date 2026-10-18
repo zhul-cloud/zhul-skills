@@ -20,9 +20,9 @@
 //
 // run.json 格式见 references/run-protocol.md「run.json」。
 
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
@@ -41,7 +41,8 @@ const HELPERS_DIR = process.env.BROWSEROS_HELPERS_DIR;
 const [cmd, ...args] = process.argv.slice(2);
 let SETTINGS;
 let validateIdentity;
-let initializeData, withCurrentData;
+let initializeData, withCurrentData, withDataRead;
+let store;
 
 const STATUSES = ['已回复', '无货', '挂牌价', '未回复', '自动回复'];
 // 因店家提问停止聊天的结束原因，这两种要在 stopQuestion 里记下问题类型，供 stats 统计
@@ -127,6 +128,7 @@ function init(args) {
         erpUrl = normalizeErpUrl(args[1]);
     }
     const result = initializeData(() => {
+        store.recoverPending();
         const config = readConfig();
         const effectiveUrl = erpUrl ?? (config.erpUrl == null || config.erpUrl === '' ? null : normalizeErpUrl(config.erpUrl));
         mkdirSync(RUNS, { recursive: true });
@@ -206,6 +208,7 @@ function erpItems(runPath, args = []) {
     if (simulated(run)) throw new Error('模拟 run 不得生成 ERP 报价');
     if (run.submitted) throw new Error('任务已提交，先核对 ERP 状态，不得重复提交');
     if (run.submissionAttempt != null && run.submissionAttempt.state !== 'not_sent') throw new Error('已有提交尝试，只能用原 payload 核对 ERP 状态，不得自动重新提交');
+    if (run.draftReceipt != null && !['not_sent', 'confirmed'].includes(run.draftReceipt.state)) throw new Error('草稿写入已发或结果未确认，只能用原 draftReceipt.payload 和 expectedSnapshot 核对；不得重新生成输入');
     if (!draft) {
         const problems = finalProblems(run);
         if (problems.length) throw new Error('不能生成正式提交报价：\n- ' + problems.join('\n- '));
@@ -279,7 +282,8 @@ function resumableRun(taskCode) {
     if (existsSync(RUNS)) for (const name of readdirSync(RUNS, { withFileTypes: true })) {
         if (!name.isDirectory() || !name.name.startsWith(`${safeTask(taskCode)}-`)) continue;
         const dir = join(RUNS, name.name);
-        const run = readJsonFile(join(dir, 'run.json'));
+        if (!existsSync(join(dir, 'run.json')) && readdirSync(dir).length === 0) continue; // 首次事务提交前失败留下的空目录不是业务断点。
+        const run = store.readManaged(dir);
         if (run.task !== taskCode) continue;
         if (simulated(run)) continue;
         const problems = run.items?.length ? validateRun(run) : run.status === 'running' && Array.isArray(run.items) && Array.isArray(run.platforms) ? [] : ['缺少有效任务记录'];
@@ -298,7 +302,7 @@ function resumeProgress(dir, run) {
     for (const platform of run.platforms ?? []) {
         const path = platformFile(dir, platform);
         if (!existsSync(path)) continue;
-        const part = readJsonFile(path);
+        const part = store.readPart(dir, platform, run);
         const problems = validatePart(run, part, platform, true);
         if (problems.length) throw new Error(`${path} 记录损坏：${problems.join('；')}`);
         if (partState(part) === 'completed' || part.skipped) completedPlatforms.push(platform);
@@ -315,11 +319,14 @@ function newRun(taskCode, json = false) {
     if (!dir) {
         dir = join(RUNS, `${safeTask(taskCode)}-${new Date().toISOString().replace(/[-:.TZ]/g, '')}-${randomUUID().slice(0, 8)}`);
         mkdirSync(dir, { recursive: true });
-        run = { task: taskCode, status: 'running', createdAt: new Date().toISOString(), items: [], platforms: [], submitted: false };
-        writeFileSync(join(dir, 'run.json'), JSON.stringify(run, null, 2));
+        run = store.createRun(dir, taskCode);
     }
     const progress = resumeProgress(dir, run);
-    console.log(json ? JSON.stringify({ runDir: dir, resumed: !!prior, needsErpReconcile: true, ...progress }, null, 2) : dir);
+    if (prior) {
+        store.commit(dir, run, { event: { eventType: 'run.opened', phase: 'task' } });
+        run = store.readManaged(dir);
+    }
+    console.log(json ? JSON.stringify({ runDir: dir, runId: run.runId, skillVersion: run.skillVersion, revision: run.revision, resumed: !!prior, needsErpReconcile: true, ...progress }, null, 2) : dir);
 }
 
 function recent(model, days = SETTINGS.dedupeDays) {
@@ -371,7 +378,11 @@ function next(taskCodes) {
  */
 function mark(result, taskCode, reason) {
     mkdirSync(DATA_DIR, { recursive: true });
-    appendFileSync(PROCESSED, JSON.stringify({ time: new Date().toISOString(), task: taskCode, result, reason }) + '\n');
+    const prior = resumableRun(taskCode);
+    const content = (existsSync(PROCESSED) ? readFileSync(PROCESSED, 'utf8') : '') + JSON.stringify({ time: new Date().toISOString(), task: taskCode, result, reason,
+        ...(prior?.run ? { runId: prior.run.runId, skillVersion: prior.run.skillVersion } : {}) }) + '\n';
+    if (prior?.run) store.commit(prior.dir, prior.run, { event: { eventType: result === 'manual' ? 'task.manual' : 'task.skipped', phase: 'task', reason, outcome: result }, writes: [{ path: PROCESSED, content }] });
+    else store.queueEvent(taskCode, result, reason, PROCESSED, content);
     console.log(`任务 ${taskCode} 已记为${result === 'manual' ? '需人工处理' : '跳过'}：${reason}`);
 }
 
@@ -389,6 +400,21 @@ function validateRun(run) {
         problems.push('submissionAttempt：需要 state（pending / unknown / failed / confirmed / not_sent）和有效 at');
     }
     if (run.submissionAttempt?.state === 'not_sent' && run.submissionAttempt.writeAttempted !== false) problems.push('submissionAttempt.not_sent 必须有 helper 明确返回的 writeAttempted:false');
+    if (run.draftReceipt != null) {
+        const r = run.draftReceipt;
+        const object = v => v != null && typeof v === 'object' && !Array.isArray(v);
+        if (!object(r) || !['pending', 'unknown', 'failed', 'confirmed', 'not_sent'].includes(r.state) || !validTime(r.at)
+            || !object(r.payload) || String(r.payload.taskId) !== String(run.taskId) || !Array.isArray(r.payload.items) || !object(r.expectedSnapshot)) problems.push('draftReceipt：需要合法state/at、原payload及expectedSnapshot');
+        if (r.state === 'not_sent' && r.writeAttempted !== false) problems.push('draftReceipt.not_sent 必须有明确 writeAttempted:false');
+        if (r.state === 'confirmed') {
+            const verified = r.verifiedItemIds;
+            if (!validTime(r.verifiedAt) || r.verify?.ok !== true || !Array.isArray(r.verify?.mismatches) || r.verify.mismatches.length
+                || !Array.isArray(verified) || !verified.length || new Set(verified.map(String)).size !== verified.length
+                || verified.some(id => !ids.has(String(id))) || !Array.isArray(r.snapshot?.items)
+                || (r.payload?.items ?? []).some(i => !(r.payload.skipItemIds ?? []).some(id => String(id) === String(i.itemId)) && !verified.some(id => String(id) === String(i.itemId)))
+                || (verified ?? []).some(id => !r.snapshot?.items?.some(i => String(i.itemId) === String(id)))) problems.push('draftReceipt.confirmed 缺少本次成功verify、完整verifiedItemIds、同次snapshot及verifiedAt');
+        }
+    }
     (run.shops ?? []).forEach((s, n) => {
         const at = `shops 第 ${n + 1} 家（${s.shop ?? '未命名'}）`;
         if (!String(s.shop ?? '').trim()) problems.push(`${at}：缺少店铺名称`);
@@ -403,6 +429,7 @@ function validateRun(run) {
         if (s.answeredTopics != null && !Array.isArray(s.answeredTopics)) problems.push(`${at}：answeredTopics 应为数组`);
         if (s.pendingMessage != null) {
             const m = s.pendingMessage;
+            if (typeof m.messageId !== 'string' || !m.messageId.trim() || m.messageId.length > 200) problems.push(`${at}：pendingMessage需要稳定messageId`);
             if (!['initial', 'followUp', 'reply', 'thankYou', 'correction'].includes(m.kind) || !String(m.text ?? '').trim() || !validTime(m.preparedAt) || !['pending', 'confirmed', 'cancelled'].includes(m.state)) problems.push(`${at}：pendingMessage 需要 kind/text/preparedAt/state`);
             if (m.state === 'confirmed' && !validTime(m.confirmedAt)) problems.push(`${at}：已确认 pendingMessage 缺少 confirmedAt`);
             if (m.state === 'confirmed' && m.kind === 'initial' && !validTime(s.sentAt)) problems.push(`${at}：首条发送已确认但未保存 sentAt`);
@@ -430,6 +457,13 @@ function validateRun(run) {
             problems.push(`${at}：结束原因是「${s.endReason}」，要在 stopQuestion 里填问题类型 type`);
         }
     });
+    for (const incident of run.incidents ?? []) {
+        if (incident.type !== 'message.correction') continue;
+        if (!CHANNELS.includes(incident.platform) || incident.pendingMessage?.kind !== 'correction'
+            || !Array.isArray(incident.itemIds) || !incident.itemIds.length) problems.push('更正事件需要本平台、实际targetShop/itemIds及kind:correction的pendingMessage');
+        problems.push(...validateRun({ task: run.task, items: run.items, shops: [{ platform: incident.platform, shop: incident.targetShop,
+            itemIds: incident.itemIds, status: '未回复', quotes: [], pendingMessage: incident.pendingMessage }] }).map(p => `更正事件：${p}`));
+    }
     for (const n of run.noStock ?? []) {
         if (!ids.has(String(n.itemId))) problems.push(`noStock：itemId ${n.itemId} 不在本任务里`);
     }
@@ -441,7 +475,8 @@ function validateRun(run) {
 }
 
 function loadRun(path) {
-    const run = JSON.parse(readFileSync(path, 'utf8'));
+    if (basename(path) !== 'run.json') throw new Error('必须指定 run.json');
+    const run = store.readManaged(dirname(path));
     const problems = validateRun(run);
     if (problems.length) {
         console.error('run.json 有问题：\n- ' + problems.join('\n- '));
@@ -465,6 +500,7 @@ function finalProblems(run) {
     }
     if (run.stopAfterTask) problems.push('本轮因中断停止，恢复并核对后才能提交');
     for (const shop of run.shops ?? []) if (shop.pendingMessage?.state === 'pending') problems.push(`${shop.shop} 有未确认发送，先核对聊天界面`);
+    for (const incident of run.incidents ?? []) if (incident.type === 'message.correction' && incident.pendingMessage?.state === 'pending') problems.push(`${incident.targetShop} 有未确认更正，先核对聊天界面`);
     return problems;
 }
 
@@ -475,7 +511,8 @@ function validatePart(run, part, platform, partial = false) {
         problems.push(`platform 应为「${platform}」，现在是「${part.platform ?? ''}」`);
     }
     const shops = (part.shops ?? []).map((s) => ({ ...s, platform }));
-    problems.push(...validateRun({ task: run.task, items: run.items, shops, noStock: part.noStock, incompleteItems: part.incompleteItems }));
+    problems.push(...validateRun({ task: run.task, items: run.items, shops, noStock: part.noStock, incompleteItems: part.incompleteItems,
+        incidents: (part.incidents ?? []).map(i => ({ ...i, platform })) }));
     const state = partState(part);
     if (!['running', 'completed', 'interrupted'].includes(state)) problems.push('status 应为 running / completed / interrupted');
     if (part.skipped && state !== 'completed') problems.push('skipped 平台应为 completed');
@@ -484,6 +521,7 @@ function validatePart(run, part, platform, partial = false) {
     if (state === 'interrupted' && !String(part.interruption?.reason ?? '').trim()) problems.push('interrupted 需要 interruption.reason');
     if (!partial && state !== 'completed') problems.push(`平台 ${state}，只能用 --partial 保存中途快照`);
     if (state === 'completed' && (part.shops ?? []).some((s) => s.pendingMessage?.state === 'pending')) problems.push('已完成平台仍有未确认发送，先核对聊天界面');
+    if (state === 'completed' && (part.incidents ?? []).some(i => i.type === 'message.correction' && i.pendingMessage?.state === 'pending')) problems.push('已完成平台仍有未确认更正，先核对聊天界面');
     if (state === 'completed' && humanHelpBlocked(part.humanHelp)) problems.push('已完成平台的人助尚未核验解除，需要 resolved、verified:true 和有效 verifiedAt');
     return problems;
 }
@@ -494,7 +532,8 @@ function validatePart(run, part, platform, partial = false) {
  */
 function merge(runDir, args = []) {
     const runPath = join(runDir, 'run.json');
-    const run = readJsonFile(runPath);
+    const run = store.readManaged(runDir);
+    const before = store.stable(store.business(run));
     const partial = args.includes('--partial');
     const selected = args.filter((a) => a !== '--partial');
     if (partial && !selected.length) throw new Error('merge --partial 必须明确指定平台');
@@ -503,9 +542,9 @@ function merge(runDir, args = []) {
         console.error(`${runDir} 里没有 run-<平台>.json`);
         throw Object.assign(new Error('记录校验失败'), { exitCode: 2, reported: true });
     }
-    const merged = [];
+    const merged = [], covered = new Set();
     for (const f of files) {
-        const part = readJsonFile(join(runDir, f));
+        const part = store.readPart(runDir, f.slice(4, -5), run);
         const platform = String(part.platform ?? '').trim();
         if (!platform) {
             console.error(`${f}：缺少 platform（平台）`);
@@ -533,8 +572,8 @@ function merge(runDir, args = []) {
             run.stopAfterTask = true;
         }
         merged.push(`${platform}：${(part.shops ?? []).length} 家店`);
+        covered.add(platform);
     }
-    const covered = new Set(files.map((f) => String(readJsonFile(join(runDir, f)).platform).trim()));
     const missing = (run.platforms ?? []).filter((p) => !covered.has(p));
     const problems = [
         ...(partial ? [] : missing.map((p) => `平台「${p}」没有 run-<平台>.json：子代理还没写完，或该平台需要在记录文件里写明 skipped 原因`)),
@@ -544,9 +583,10 @@ function merge(runDir, args = []) {
         console.error('合并没有写入 run.json：\n- ' + problems.join('\n- '));
         throw Object.assign(new Error('记录校验失败'), { exitCode: 2, reported: true });
     }
-    const temporary = join(runDir, `.run-${randomUUID()}.tmp`);
-    writeFileSync(temporary, JSON.stringify(run, null, 2), { flag: 'wx' });
-    renameSync(temporary, runPath);
+    if (before !== store.stable(store.business(run))) {
+        run.revision++;
+        store.commit(runDir, run, { event: { eventType: 'platform.merged', phase: 'platform', outcome: [...covered].join(',') } });
+    }
     console.log(`已合并到 ${runPath}\n` + merged.join('\n'));
 }
 
@@ -555,8 +595,9 @@ function merge(runDir, args = []) {
  * 已记下全部结束的时间。有问题时列出并以 2 退出，子代理改好再结束。
  */
 function check(runDir, platform, args = []) {
-    const run = readJsonFile(join(runDir, 'run.json'));
-    const part = readJsonFile(platformFile(runDir, platform));
+    const run = store.readManaged(runDir);
+    const part = store.readPart(runDir, platform, run);
+    if (!part) throw new Error(`找不到 run-${platform}.json`);
     const problems = validatePart(run, part, platform, args.includes('--partial'));
     if (problems.length) {
         console.error(`run-${platform}.json 有问题：\n- ` + problems.join('\n- '));
@@ -565,14 +606,77 @@ function check(runDir, platform, args = []) {
     console.log(`run-${platform}.json 检查通过：${part.skipped ? `本平台跳过（${part.skipped}）` : `${(part.shops ?? []).length} 家店`}`);
 }
 
+/** 主/平台统一保存入口。业务快照由调用者提供；身份、版本、序号由脚本维护。 */
+function checkpoint(runDir, inputPath, eventOnly = false) {
+    const input = readJsonFile(inputPath), run = store.readManaged(runDir);
+    if (!input || input.runId !== run.runId) throw new Error('RUN_ID: 输入不属于当前 run');
+    const allowed = ['runId', 'eventId', 'actor', 'event', ...(eventOnly ? [] : ['scope', 'platform', 'expectedRevision', 'snapshot'])];
+    if (Object.keys(input).some(key => !allowed.includes(key))) throw new Error('CHECKPOINT_INPUT: 含未知输入字段');
+    if (typeof input.eventId !== 'string' || !input.eventId.trim() || input.eventId.length > 200) throw new Error('EVENT_ID: 需要稳定 eventId');
+    const prior = store.previousEvent(run, input.eventId, input);
+    if (prior) { console.log(JSON.stringify(prior)); return; }
+    let next = { ...run }, writes = [];
+    if (!eventOnly) {
+        if (!['run', 'platform'].includes(input.scope) || input.snapshot == null || typeof input.snapshot !== 'object' || Array.isArray(input.snapshot)) throw new Error('CHECKPOINT_INPUT: 需要scope和完整snapshot');
+        const platform = input.platform;
+        if (input.actor !== 'main' && !(input.scope === 'platform' && input.actor === platform)) throw new Error('CHECKPOINT_OWNER: 平台执行者只能保存自身平台');
+        if (input.scope === 'run' && platform != null) throw new Error('CHECKPOINT_INPUT: run scope不能指定platform');
+        const old = input.scope === 'run' ? run : store.readPart(runDir, platform, run);
+        const revision = old?.revision ?? 0;
+        if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision !== revision) throw new Error(`REVISION_CONFLICT: 预期 ${input.expectedRevision}，当前 ${revision}；重新读取并合并，不盲重放旧快照`);
+        for (const key of store.META) if (Object.hasOwn(input.snapshot, key) && store.stable(input.snapshot[key]) !== store.stable(old?.[key])) throw new Error(`RUN_METADATA: ${key} 由脚本维护`);
+        const snapshot = store.business(input.snapshot);
+        if (input.scope === 'run') {
+            if (snapshot.task !== run.task || run.taskId != null && snapshot.taskId !== run.taskId
+                || run.items.length && store.stable(snapshot.items?.map(i => [String(i.itemId), i.model])) !== store.stable(run.items.map(i => [String(i.itemId), i.model]))) throw new Error('RUN_IDENTITY: 不能改变已绑定任务或型号身份');
+            if (run.platforms.length && store.stable(snapshot.platforms) !== store.stable(run.platforms)) throw new Error('RUN_PLATFORM: 不能改变已绑定平台范围');
+            if (validTime(run.deadline) && snapshot.deadline !== run.deadline || run.quoteDeadline != null && snapshot.quoteDeadline !== run.quoteDeadline) throw new Error('RUN_DEADLINE: 不能重置或删除原任务截止时间');
+            for (const key of ['shops', 'noStock', 'incompleteItems', 'skippedPlatforms', 'platformStages', 'platformStates', 'platformHumanHelp', 'platformInterruptions']) {
+                const empty = v => v == null || typeof v === 'object' && Object.keys(v).length === 0;
+                if (store.stable(snapshot[key]) !== store.stable(run[key]) && !(empty(snapshot[key]) && empty(run[key]))) throw new Error(`CHECKPOINT_OWNER: ${key} 仅由平台checkpoint和merge维护`);
+            }
+            if (store.stable((snapshot.incidents ?? []).filter(i => i.platform != null)) !== store.stable((run.incidents ?? []).filter(i => i.platform != null))) throw new Error('CHECKPOINT_OWNER: 必须保留已有平台incidents');
+            next = { ...snapshot, ...Object.fromEntries(store.META.map(key => [key, run[key]])), revision: revision + 1 };
+            const problems = validateRun(next);
+            if (problems.length) throw new Error('CHECKPOINT_INVALID: ' + problems.join('；'));
+        } else {
+            if (snapshot.platform !== platform) throw new Error('RUN_PLATFORM: snapshot.platform与scope不符');
+            const problems = validatePart(run, snapshot, platform, true);
+            if (problems.length) throw new Error('CHECKPOINT_INVALID: ' + problems.join('；'));
+            const at = new Date().toISOString();
+            const part = { ...snapshot, schemaVersion: 1, runId: run.runId, skillVersion: run.skillVersion, revision: revision + 1,
+                createdAt: old?.createdAt ?? at, updatedAt: at };
+            writes.push({ path: platformFile(runDir, platform), content: JSON.stringify(part, null, 2) + '\n', revision: part.revision });
+        }
+    }
+    const event = { ...input.event };
+    if (!eventOnly && input.scope === 'platform') {
+        if (event.platform != null && event.platform !== input.platform) throw new Error('EVENT_PLATFORM: 事件平台必须与checkpoint目标一致');
+        event.platform = input.platform;
+    }
+    if (!eventOnly && /^message\./.test(event.eventType)) {
+        if (input.scope !== 'platform') throw new Error('EVENT_MESSAGE: 消息事实必须保存在平台checkpoint');
+        const correction = event.messageKind === 'correction' ? input.snapshot.incidents?.find(i => i.type === 'message.correction' && i.targetShop === event.shop) : null;
+        const subject = correction ?? input.snapshot.shops?.find(s => s.shop === event.shop);
+        const message = subject?.pendingMessage;
+        const state = event.eventType === 'message.confirmed' ? 'confirmed' : event.eventType === 'message.cancelled' ? 'cancelled' : 'pending';
+        if (message?.messageId !== event.messageId || message?.kind !== event.messageKind || message?.state !== state
+            || !(event.itemIds ?? []).every(id => subject?.itemIds?.some(x => String(x) === String(id)))) throw new Error('EVENT_MESSAGE: 事件必须关联本店当前pendingMessage的messageId/kind/state/itemIds');
+    }
+    store.eventFields(next, input.actor, event);
+    const result = store.commit(runDir, next, { event, actor: input.actor, eventId: input.eventId, writes, request: input });
+    console.log(JSON.stringify(result));
+}
+
 /** 子代理打卡：追加一行时间和正在做的事。停下等人处理时带 --paused，watch 不把它算作卡住 */
 function beat(runDir, platform, args) {
-    if (!existsSync(join(runDir, 'run.json'))) {
-        throw new Error(`${runDir} 里没有 run.json，本次目录写错了`);
-    }
+    const run = store.readManaged(runDir);
+    if (!run.platforms.includes(platform)) throw new Error('平台不在本次任务中');
     const paused = args.includes('--paused');
     const doing = args.filter((a) => a !== '--paused').join(' ');
-    appendFileSync(beatFile(runDir, platform), JSON.stringify({ at: new Date().toISOString(), paused, doing }) + '\n');
+    const path = beatFile(runDir, platform);
+    store.commit(runDir, run, { actor: platform, event: { eventType: 'heartbeat', phase: 'platform', outcome: paused ? 'paused' : 'running' },
+        writes: [{ path, content: (existsSync(path) ? readFileSync(path, 'utf8') : '') + JSON.stringify({ at: new Date().toISOString(), paused, doing }) + '\n' }] });
     console.log('ok');
 }
 
@@ -591,14 +695,17 @@ function tryRead(read) {
  * 还没打过卡的平台从 watch 开始时算起。maxGapMinutes 是这个平台两次打卡之间最长隔了几分钟，供调整 stallMinutes 参考。
  */
 function watch(runDir, args) {
-    const run = readJsonFile(join(runDir, 'run.json'));
+    const run = store.readManaged(runDir);
     const platforms = (run.platforms ?? []).filter((p) => !(run.skippedPlatforms ?? []).some((s) => s.platform === p));
     const limitMs = Number(SETTINGS.subagents?.stallMinutes ?? 3) * 60000;
     const started = Date.now();
     const minutes = (ms) => Math.round(ms / 6000) / 10;
-    const look = () => {
+    const look = () => withDataRead(() => {
+        store.noPending();
+        const current = store.readManaged(runDir);
+        if (current.runId !== run.runId) throw new Error('RUN_ID: watch 的 run 已被替换');
         const now = Date.now();
-        const out = { stalled: [], running: [], paused: [], finished: [], interrupted: [] };
+        const out = { stopAfterTask: !!current.stopAfterTask, stalled: [], running: [], paused: [], finished: [], interrupted: [] };
         for (const p of platforms) {
             const part = tryRead(() => JSON.parse(readFileSync(platformFile(runDir, p), 'utf8')));
             // 追加打卡时可能只读到最后一行的一部分，仍保留前面有效的暂停和时间记录。
@@ -618,19 +725,25 @@ function watch(runDir, args) {
             else out.running.push(row);
         }
         return out;
-    };
+    }, { waitMs: 5000 });
     const outcome = (out) => out.stalled.length ? 'stalled' : out.running.length || out.paused.length ? 'running' : out.interrupted.length ? 'interrupted' : 'finished';
-    const report = (result, out) => console.log(JSON.stringify({ result, stopAfterTask: !!run.stopAfterTask || !!out.interrupted.length, stallMinutes: limitMs / 60000, ...out }, null, 2));
+    const report = (result, out) => console.log(JSON.stringify({ result, stallMinutes: limitMs / 60000, ...out, stopAfterTask: out.stopAfterTask || !!out.interrupted.length }, null, 2));
     if (args.includes('--once')) {
         const out = look();
         report(outcome(out), out);
         return;
     }
     const timer = setInterval(() => {
-        const out = look();
-        if (out.stalled.length || (!out.running.length && !out.paused.length)) {
+        try {
+            const out = look();
+            if (out.stalled.length || (!out.running.length && !out.paused.length)) {
+                clearInterval(timer);
+                report(outcome(out), out);
+            }
+        } catch (error) {
             clearInterval(timer);
-            report(outcome(out), out);
+            console.error('出错：' + error.message);
+            process.exitCode = 1;
         }
     }, WATCH_INTERVAL_MS);
 }
@@ -638,8 +751,8 @@ function watch(runDir, args) {
 function finish(runPath) {
     const run = loadRun(runPath);
     if (simulated(run)) throw new Error('模拟 run 不得写入真实询价记录');
-    const snapshot = createHash('sha256').update(JSON.stringify(run)).digest('hex');
-    const archiveKey = createHash('sha256').update(join(dirname(runPath), 'run.json') + '\n' + snapshot).digest('hex');
+    const snapshot = createHash('sha256').update(store.stable(store.business(run))).digest('hex');
+    const archiveKey = createHash('sha256').update(run.runId + '\n' + snapshot).digest('hex');
     const recorded = new Set(readJsonl(RECORDS).filter((r) => r.archiveKey === archiveKey).map((r) => r.archiveRow));
     const archived = readJsonl(PROCESSED).some((r) => r.archiveKey === archiveKey);
     if (archived) {
@@ -667,7 +780,7 @@ function finish(runPath) {
             if (q.price != null && q.price !== '') quoteCount++;
             const archiveRow = lines.length;
             lines.push(JSON.stringify({
-                archiveKey, archiveRow, recordedAt: now,
+                archiveKey, archiveRow, recordedAt: now, runId: run.runId, skillVersion: run.skillVersion,
                 time, task: run.task, platform, reusedFrom: s.reusedFrom ?? null, model: modelOf.get(String(q.itemId)) ?? '',
                 shop: s.shop, contact: s.contact ?? '', url: s.url ?? '', status: s.status, reply: s.reply ?? '',
                 ...(s.identity != null ? { identity: s.identity } : {}),
@@ -683,14 +796,15 @@ function finish(runPath) {
     }
     mkdirSync(DATA_DIR, { recursive: true });
     const missing = lines.filter((_, n) => !recorded.has(n));
-    if (missing.length) {
-        appendFileSync(RECORDS, missing.join('\n') + '\n');
-    }
-    appendFileSync(PROCESSED, JSON.stringify({
+    const writes = [];
+    if (missing.length) writes.push({ path: RECORDS, content: (existsSync(RECORDS) ? readFileSync(RECORDS, 'utf8') : '') + missing.join('\n') + '\n' });
+    writes.push({ path: PROCESSED, content: (existsSync(PROCESSED) ? readFileSync(PROCESSED, 'utf8') : '') + JSON.stringify({
         time: now, task: run.task, taskId: run.taskId ?? null,
+        runId: run.runId, skillVersion: run.skillVersion,
         archiveKey, snapshot, runDir: dirname(runPath), stopAfterTask: !!run.stopAfterTask,
         result: run.submitted ? 'submitted' : 'not-submitted', quotes: quoteCount, platforms: [...platforms],
-    }) + '\n');
+    }) + '\n' });
+    store.commit(dirname(runPath), run, { event: { eventType: 'run.archived', phase: 'archive', outcome: run.submitted ? 'submitted' : 'not-submitted' }, writes });
     console.log(`已写入询价记录 ${lines.length} 条；任务 ${run.task} 记为${run.submitted ? '已提交' : '未提交'}`);
 }
 
@@ -740,7 +854,8 @@ try {
     // version 仍可只复制 records.mjs 和 SKILL.md 运行，不读取或校验配置。
     const config = cmd === 'version' ? null : await import('./config.mjs');
     if (cmd !== 'version') {
-        ({ initializeData, withCurrentData } = await import('./data-lifecycle.mjs'));
+        ({ initializeData, withCurrentData, withDataRead } = await import('./data-lifecycle.mjs'));
+        store = await import('./run-store.mjs');
         validateIdentity = (await import('./contacts.mjs')).identityProblems;
     }
     const execute = () => {
@@ -755,6 +870,8 @@ try {
         newRun(args[0]);
     } else if (cmd === 'open-run' && args[0]) {
         newRun(args[0], true);
+    } else if (['checkpoint', 'event'].includes(cmd) && args.length === 2) {
+        checkpoint(args[0], args[1], cmd === 'event');
     } else if (cmd === 'recent' && args[0]) {
         recent(args[0], args[1]);
     } else if (cmd === 'processed' && args[0]) {
@@ -785,6 +902,8 @@ try {
             '  node records.mjs install-helpers [--force]',
             '  node records.mjs new-run <任务编号>',
             '  node records.mjs open-run <任务编号>',
+            '  node records.mjs checkpoint <本次目录> <input.json>',
+            '  node records.mjs event <本次目录> <event.json>',
             `  node records.mjs recent <型号> [天数=${SETTINGS.dedupeDays}]`,
             '  node records.mjs processed <任务编号>',
             '  node records.mjs next <任务编号...>',
@@ -802,8 +921,16 @@ try {
     }
     };
     // init 自持生命周期锁；其余写入口只校验当前版，不自动清理。
-    if (['install-helpers', 'new-run', 'open-run', 'skip', 'manual', 'beat', 'merge', 'finish'].includes(cmd)) withCurrentData(execute);
-    else execute();
+    if (['install-helpers', 'new-run', 'open-run', 'skip', 'manual', 'beat', 'merge', 'finish', 'checkpoint', 'event'].includes(cmd)) {
+        withCurrentData(() => { store.recoverPending(); execute(); }, { waitMs: 5000 });
+    } else if (['check', 'erp-items'].includes(cmd)) {
+        withCurrentData(() => { store.noPending(); execute(); }, { waitMs: 5000 });
+    } else if (cmd === 'next') {
+        withDataRead(() => { store.noPending(); execute(); }, { waitMs: 5000 });
+    } else {
+        if (cmd !== 'version' && cmd !== 'init') store.noPending();
+        execute();
+    }
 } catch (e) {
     if (!e.reported) console.error('出错：' + e.message);
     process.exitCode = e.exitCode ?? 1;
