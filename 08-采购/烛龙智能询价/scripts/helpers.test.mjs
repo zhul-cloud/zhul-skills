@@ -5,7 +5,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, syml
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
-import { adaptSource, compareSource, extractSource, helperSource, listHelpers } from './helpers.mjs';
+import { adaptSource, compareSource, extractSource, helperSource, listHelpers, officialHashes } from './helpers.mjs';
 
 const script = fileURLToPath(new URL('./helpers.mjs', import.meta.url));
 const erp = 'https://erp.example.invalid:8443';
@@ -90,6 +90,20 @@ test('ERP source host follows explicit URL while the function remains portable t
     assert.equal(first.policy, 'skill-version');
 });
 
+test('ERP keeps its published predecessor hash for migration without trusting unknown content', () => {
+    const key = '_erp/erpApi';
+    assert.ok(officialHashes[key].includes('e662e6634773133cd9c8cf38d4d685f9a14719b1164e593533da689ef81fd7ec'));
+    assert.equal(compareSource(key, helperSource(key, erp).source, erp).status, 'current');
+    assert.equal(compareSource(key, 'unknown customized ERP', erp).status, 'unknown');
+});
+
+test('淘宝 keeps the fixed-wait published predecessor hash when updating its reader', () => {
+    const key = 'market.m.taobao.com/imOpenAndRead';
+    assert.ok(officialHashes[key].includes('57c0d5b74e6da0ec7e5b1cc8f90d9602e0434fee1642106f25c6a967f1776897'));
+    assert.equal(compareSource(key, helperSource(key).source).status, 'current');
+    assert.equal(compareSource(key, helperSource(key).source.replace('const contact =', '// local change\n  const contact =')).action, 'preserve');
+});
+
 test('extraction accepts CRLF and fails closed on missing/duplicate blocks or changed signature', () => {
     const source = 'async (browser, pageId, req) => { return req; }';
     assert.equal(extractSource(`before\r\n\`\`\`js\r\n${source}\r\n\`\`\`\r\nafter`), source);
@@ -135,6 +149,8 @@ for (const entry of entries) {
                 const request = actual.calls.find((call) => call.arg?.method);
                 assert.equal(request.arg.method, 'GET');
                 assert.equal(request.arg.url, '/api/v1/inquiry/my-tasks?done=false');
+            } else if (entry.originalName === 'imOpenAndRead') {
+                assert.deepEqual(actual.output.input, { contact: input, headerName: input });
             } else {
                 assert.deepEqual(actual.output.input, input);
             }
@@ -198,12 +214,11 @@ test('registered content distinguishes current, known older official, and custom
 
 test('the previously registered official 1688 header reader is recognized for automatic DOM-fix update', () => {
     const key = 'air.1688.com/imOpenAndRead';
-    const previous = helperSource(key).source.replace("querySelectorAll('a, button, .go-shop')", "querySelectorAll('a, button')");
-    const compared = compareSource(key, previous);
-    assert.equal(compared.actualSha256, '98a65c0ae0d57d2a2e5c74fd0a45e86016f9008bfb11ce8a069f04bfb1e10b51');
-    assert.equal(compared.status, 'known-official-older');
-    assert.equal(compared.action, 'sync');
-    assert.equal(compareSource(key, previous.replace('const contact =', '// local change\n  const contact =')).action, 'preserve');
+    assert.ok(officialHashes[key].includes('98a65c0ae0d57d2a2e5c74fd0a45e86016f9008bfb11ce8a069f04bfb1e10b51'));
+    assert.ok(officialHashes[key].includes('09a535d8cb57b7d8993771173cdb70e41a9d3958714bc4c136b73f7eb01ba89f'));
+    const current = helperSource(key).source;
+    assert.equal(compareSource(key, current).status, 'current');
+    assert.equal(compareSource(key, current.replace('const contact =', '// local change\n  const contact =')).action, 'preserve');
 });
 
 test('compare CLI checks each ordinary/prefixed registration without writing or trusting a name marker', (t) => {

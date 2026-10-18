@@ -171,7 +171,7 @@ async (browser, pageId, req) => {
     let url = ep.path.replace(/\{(\w+)\}/g, (_, k) => encodeURIComponent(String(pathParams[k])));
     if (query) url += '?' + Object.entries(query).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`).join('&');
     // BrowserOS 的 page.evaluate 返回超过约 4KB 时会改写成文件、不给内容，所以请求体和响应都分段传：
-    // 内容先放在页面的 window.__erpApi 里，每次只传一小段（800 个字符，中文和转义后也在限制内）
+    // 内容先放在页面的 window.__erpApi 里，每次只传一小段（800 个字符）；初始化/请求回包携带首段，余段照常传输。
     const CHUNK = 800;
     const ev = async (fn, arg) => {
       const w = await bounded(() => page.evaluate(fn, arg), Math.min(EVALUATE_MS, deadlineAt - Date.now()));
@@ -182,21 +182,21 @@ async (browser, pageId, req) => {
     const bodyText = body ? JSON.stringify(body) : '';
     let res;
     try {
-      await ev(({ key, deadlineAt }) => {
+      await ev(({ key, deadlineAt, part }) => {
         if (Date.now() >= deadlineAt) throw new Error('ERP_TIMEOUT');
         const slots = window.__erpApi = window.__erpApi || {};
-        const slot = slots[key] = { up: '', text: '', controller: null };
+        const slot = slots[key] = { up: part, text: '', controller: null };
         // 即使宿主中断、finally 无法通信或初始化晚到，页面也会取消请求并释放槽位。
         slot.timer = setTimeout(() => {
           slot.controller?.abort();
           delete slots[key];
         }, deadlineAt - Date.now());
         return true;
-      }, { key, deadlineAt });
-      for (let i = 0; i < bodyText.length; i += CHUNK) {
+      }, { key, deadlineAt, part: bodyText.slice(0, CHUNK) });
+      for (let i = CHUNK; i < bodyText.length; i += CHUNK) {
         await ev(({ key, part }) => { window.__erpApi[key].up += part; return true; }, { key, part: bodyText.slice(i, i + CHUNK) });
       }
-      res = await ev(async ({ key, method, url, refreshPath, deadlineAt, requestMs }) => {
+      res = await ev(async ({ key, method, url, refreshPath, deadlineAt, requestMs, chunkSize }) => {
         const slot = window.__erpApi?.[key];
         if (!slot || Date.now() >= deadlineAt) throw new Error('ERP_TIMEOUT');
         const controller = slot.controller = new AbortController();
@@ -244,12 +244,12 @@ async (browser, pageId, req) => {
             if (refreshed) http = await send(token);
             if (unauthorized()) return { login: true, reason: 'expired' };
           }
-          return { http, length: slot.text.length };
+          return { http, length: slot.text.length, first: slot.text.slice(0, chunkSize) };
         } finally { clearTimeout(timer); }
-      }, { key, method: ep.method, url, refreshPath: CONTRACT.endpoints.refresh.path, deadlineAt, requestMs: REQUEST_MS });
+      }, { key, method: ep.method, url, refreshPath: CONTRACT.endpoints.refresh.path, deadlineAt, requestMs: REQUEST_MS, chunkSize: CHUNK });
       if (!res.login) {
-        let text = '';
-        for (let i = 0; i < res.length; i += CHUNK) {
+        let text = res.first;
+        for (let i = CHUNK; i < res.length; i += CHUNK) {
           text += await ev(({ key, i, n }) => window.__erpApi[key].text.slice(i, i + n), { key, i, n: CHUNK });
         }
         try { res.json = JSON.parse(text); } catch (e) { res.json = null; }

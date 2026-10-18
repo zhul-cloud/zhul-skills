@@ -88,7 +88,7 @@ function makeEnv(state) {
   const sandboxPage = {
     evaluate: async (fn, arg) => {
       const stage = typeof arg === 'string' ? 'cleanup' : arg?.method ? 'request'
-        : arg?.part !== undefined ? 'upload' : arg?.n !== undefined ? 'download' : 'init';
+        : arg?.deadlineAt !== undefined ? 'init' : arg?.part !== undefined ? 'upload' : arg?.n !== undefined ? 'download' : 'init';
       evaluations.push({ stage, arg });
       const override = await state.evaluateHook?.(stage, arg);
       if (override) return override;
@@ -521,7 +521,7 @@ await fault('挂起PUT取消后writeAttempted为true且绝不重放', { detail: 
 for (const stage of ['upload', 'download']) {
   await fault(`${stage}异步故障finally清理且异常令牌不输出`, { detail: baseDetail(),
     evaluateHook: async (actual) => { if (actual === stage) { await delay(1); throw new Error('T1 sensitive context'); } } },
-    stage === 'upload' ? { op: 'save', taskId: 1, submit: false, items: fresh, expectedSnapshot: faultBaseline } : { op: 'task', taskId: 1 },
+    stage === 'upload' ? { op: 'save', taskId: 1, submit: false, items: [{ itemId: 1, quotes: Array.from({ length: 5 }, (_, n) => ({ ...fresh[0].quotes[0], shopName: `长报文店${n}`, note: '备注'.repeat(100) })) }], expectedSnapshot: faultBaseline } : { op: 'task', taskId: 1 },
     (o, env) => o.error === 'ERP_HTTP' && !JSON.stringify(o).includes('T1') && noSlots(env)
       && (stage !== 'upload' || o.writeAttempted === true && env.calls.every((c) => c.method !== 'PUT')));
 }
@@ -560,6 +560,45 @@ const isolatedEnvs = [makeEnv({}), makeEnv({ store: { local: {}, session: {} } }
 const isolated = await Promise.all(isolatedEnvs.map((env) => fastErpApi(env.browser, 1, { op: 'ping' })));
 results.push({ name: '两个页面异步执行独立槽位与令牌，均无残留',
   pass: isolated[0].ok && isolated[1].error === 'ERP_LOGIN' && isolatedEnvs.every(noSlots) });
+
+// 23. 传输通信次数及分片边界；真实历史版本A/B脚本随本次证据保留，不与未来源码耦合。
+const transport = async (name, state, request, expectedEvaluations, expectedHttp, check) => {
+  const env = makeEnv(state);
+  const output = await erpApi(env.browser, 1, request);
+  const boundedChunks = env.evaluations.every(({ stage, arg }) =>
+    (stage !== 'request' || arg.chunkSize === 800) && (stage !== 'download' || arg.n === 800)
+    && (arg?.part === undefined || arg.part.length <= 800));
+  results.push({ name: `首分片合并通信次数/HTTP/分片边界：${name}`,
+    pass: env.evaluations.length === expectedEvaluations && env.calls.length === expectedHttp
+      && boundedChunks && check(output, env) && noSlots(env),
+    out: JSON.stringify({ output, evaluations: env.evaluations.length, http: env.calls.length }) });
+};
+await transport('小ping响应', {}, { op: 'ping' }, 3, 1, (o) => o.ok && o.pending === 1);
+await transport('空列表', { done: true }, { op: 'list', done: false }, 3, 1, (o) => o.ok && o.tasks.length === 0);
+const escapedDetail = baseDetail();
+escapedDetail.items[0].description = ('中文😀\\\"\n\t\u0000').repeat(900);
+await transport('多段中文/emoji/转义大响应', { detail: escapedDetail }, { op: 'task', taskId: 1 }, 32, 4,
+  (o) => o.ok && o.run.items[0].description === escapedDetail.items[0].description);
+await transport('草稿短请求', { detail: baseDetail() }, { op: 'save', taskId: 1, submit: false, items: fresh, expectedSnapshot: faultBaseline }, 17, 5,
+  (o, env) => o.ok && o.writeAttempted && env.calls.filter((c) => c.method === 'PUT').length === 1);
+const longItems = [{ itemId: 1, quotes: Array.from({ length: 5 }, (_, n) => ({ ...fresh[0].quotes[0], shopName: `商家${n}`, note: '中文\\\"\n\t'.repeat(70) })) }];
+await transport('草稿多段中文/转义请求', { detail: baseDetail() }, { op: 'save', taskId: 1, submit: false, items: longItems, expectedSnapshot: faultBaseline }, 21, 5,
+  (o, env) => o.ok && env.calls.find((c) => c.method === 'PUT').body.items[0].quotes[0].note === longItems[0].quotes[0].note.slice(0, 300));
+await transport('核对完整写入范围/列表观察', { detail: baseDetail() }, { op: 'verify', taskId: 1, submitted: false, items: fresh, expectedSnapshot: faultBaseline }, 20, 6,
+  (o, env) => !o.ok && o.mismatches.length > 0 && env.calls.every((c) => c.method === 'GET'));
+await transport('GET401续期一次', { expireT1: true, refreshOk: true }, { op: 'ping' }, 3, 3, (o, env) => o.ok && refreshes(env) === 1);
+await transport('PUT401绝不续期或重放', { detail: baseDetail(), put401: true }, { op: 'save', taskId: 1, submit: false, items: fresh, expectedSnapshot: faultBaseline }, 17, 5,
+  (o, env) => o.error === 'ERP_LOGIN' && o.writeAttempted && refreshes(env) === 0 && env.calls.filter((c) => c.method === 'PUT').length === 1);
+await transport('无令牌不下载首段', { store: { local: {}, session: {} } }, { op: 'ping' }, 3, 0, (o) => o.error === 'ERP_LOGIN');
+await fault('合并请求首响应超限时仍finally清理且PUT不重放', { detail: baseDetail(),
+  evaluateHook: async (stage, arg) => stage === 'request' && arg.method === 'PUT' ? { writtenToFile: true } : undefined },
+  { op: 'save', taskId: 1, submit: false, items: fresh, expectedSnapshot: faultBaseline },
+  (o, env) => o.error === 'ERP_HTTP' && o.writeAttempted === true && noSlots(env) && env.calls.every((c) => c.method !== 'PUT'));
+await fault('携带首请求段的初始化中断仍保守标记未知写入并清理', { detail: baseDetail(),
+  evaluateHook: async (stage, arg) => { if (stage === 'init' && arg.part) throw new Error('T1 sensitive context'); } },
+  { op: 'save', taskId: 1, submit: false, items: fresh, expectedSnapshot: faultBaseline },
+  (o, env) => o.error === 'ERP_HTTP' && o.writeAttempted === true && !JSON.stringify(o).includes('T1')
+    && noSlots(env) && env.calls.every((c) => c.method !== 'PUT'));
 
 for (const r of results) console.log(`${r.pass ? 'PASS' : 'FAIL'}  ${r.name}${r.pass ? '' : '\n      ' + r.out + '\n      put=' + r.put}`);
 const passed = results.filter((r) => r.pass).length;
