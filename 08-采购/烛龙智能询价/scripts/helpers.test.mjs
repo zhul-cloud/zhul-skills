@@ -150,7 +150,9 @@ for (const entry of entries) {
                 assert.equal(request.arg.method, 'GET');
                 assert.equal(request.arg.url, '/api/v1/inquiry/my-tasks?done=false');
             } else if (entry.originalName === 'imOpenAndRead') {
-                assert.deepEqual(actual.output.input, { contact: input, headerName: input });
+                assert.equal(actual.output.input.contact, input);
+                assert.equal(actual.output.input.headerName, input);
+                assert.equal(actual.output.input.mode, 'legacy');
             } else {
                 assert.deepEqual(actual.output.input, input);
             }

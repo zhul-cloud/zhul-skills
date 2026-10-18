@@ -59,6 +59,7 @@
 
 ## 6 查看回复
 
+- 已核实的会话可按[当前账号身份映射](../references/identity-mapping.md)复用：先核当前 loginNick，再用已存 binding 精确只读；名称预览歧义或缺项时不当作无回复，可转已核 binding 的 ID 读取。首次和失效重绑均保留完整身份及就绪核验，不从客服 sender 或店铺域名推导商家 ID。
 - 用 `zhul_taobao_imPreviews` 看这几家的预览；预览变了，用 `zhul_taobao_imOpenAndRead` 点开读取末尾消息；恢复、未知发送或完整报价证据不足时另行只读核对对应会话，不能把截取缺失当成未发或无报价。
 - **只看预览不会把消息标为已读**，未读红点会一直留着，用户会以为 AI 漏看了。读到回复后，必须点开该会话一次。
 - 会话列表显示店名，聊天对象常是客服子账号（如 `tb485899055`、「yeshiwu:五佳电气批发」）。`run.json` 的 `contact` 记会话列表上显示的名字。
@@ -89,3 +90,30 @@
 
 - 操作过快可能触发滑块验证。遇到就停下请用户处理，处理后放慢节奏。
 - 聊天页偶尔断开：确认只开了一个聊天页，重新打开不带参数的聊天首页。
+
+### 具名商家页证据
+
+仅在本任务已核实的商品页、已核实店铺锚点上取有限 Fiber 的具名 `sellerId/itemId/storeCardVO`。当前可选 typed 身份为 `sellerId`，没有独立 shopId 证据；缺字段保持 `businessIdentity:null`。下面片段的参数对象来自刚通过身份守卫的聊天 identity，以及当前商品页已核实店铺 URL；不使用复合聊天 ID、hostname 数字或相似店名补值。返回值可附到 identity.businessIdentity 后交 `contacts remember/rebind`，独立 observedAt 不随聊天核验刷新。
+
+```js
+// zhul-business-observation: taobao；在已核实商品页 page.evaluate 中执行。
+({ recipientId, verifiedShopUrl }) => {
+  const sameEntry = (a, b) => { try { const x = new URL(a), y = new URL(b); return x.origin === y.origin && x.pathname === y.pathname; } catch { return false; } };
+  const anchors = [...document.querySelectorAll('a[href]')].filter((a) => sameEntry(a.href, verifiedShopUrl));
+  if (anchors.length !== 1) return null;
+  const keys = Object.keys(anchors[0]).filter((key) => key.startsWith('__reactFiber$'));
+  if (keys.length !== 1) return null;
+  let fiber = anchors[0][keys[0]];
+  for (let depth = 0; fiber && depth < 6; depth++, fiber = fiber.return) {
+    const p = fiber.memoizedProps, a = fiber.alternate?.memoizedProps;
+    if (!p?.sellerId && !a?.sellerId) continue;
+    if (typeof p?.sellerId !== 'string' || p.sellerId !== recipientId || !p.itemId || !p.storeCardVO?.shopName || !sameEntry(p.storeCardVO.shopUrl, verifiedShopUrl)) return null;
+    if (a && (a.sellerId !== p.sellerId || a.itemId !== p.itemId || a.storeCardVO?.shopName !== p.storeCardVO.shopName || !sameEntry(a.storeCardVO?.shopUrl, p.storeCardVO.shopUrl))) return null;
+    const source = new URL(location.href);
+    if (source.hostname !== 'item.taobao.com' || source.searchParams.get('id') !== String(p.itemId)) return null;
+    return { type: 'sellerId', value: p.sellerId, source: 'seller-anchor.memoizedProps.sellerId', sourceUrl: source.href,
+      shopUrl: p.storeCardVO.shopUrl, observedAt: new Date().toISOString(), itemId: String(p.itemId), shopName: p.storeCardVO.shopName };
+  }
+  return null;
+}
+```

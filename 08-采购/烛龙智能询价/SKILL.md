@@ -1,7 +1,7 @@
 ---
 name: 烛龙智能询价
 description: 为 ERP「我的询价」执行淘宝、1688 找店询价、跟进回复和提交回价；用于用户委托采购询价任务、明确调用本技能时的 start/询价/开始/处理或 IQ 任务编号，以及本技能用法/版本/更新/统计/settings/配置查看与修改请求。普通商品咨询、比价和其他采购操作不触发；用法、如何开始、版本、更新、统计和配置请求只走对应分支，不启动询价。
-version: 2.5.1
+version: 2.6.0
 ---
 
 # 烛龙智能询价
@@ -47,11 +47,13 @@ version: 2.5.1
 | 配置查看、修改或解释（含 ERP 地址） | 本文「请求分流」及所需的 [settings.md](references/settings.md)；需补充信息/选择时只另读 [execution.md「主代理提问与续跑」](references/execution.md#主代理提问与续跑)，不加载询价主流程 |
 | 主代理：准备、取任务、填报 | 本文；[execution.md「主代理提问与续跑」](references/execution.md#主代理提问与续跑)；[browseros-setup.md](references/browseros-setup.md)；[erp-api.md](references/erp-api.md)；[run-protocol.md](references/run-protocol.md)的本地防重复、主记录、汇报/报告；业务规则第 6、7 节用于报价整理/提醒 |
 | 主代理：需要并行 | 另读 [execution.md](references/execution.md)共享协作、暂停、监控、故障/合并/收尾和当前客户端章节；不必读另一客户端映射 |
-| 平台子代理 | 本文关键红线；[browseros-setup.md「按域注册与核验 helper」](references/browseros-setup.md#按域注册与核验-helper)；[业务规则](references/inquiry-rules.md)；[记录协议](references/run-protocol.md)的主字段和平台记录；本次设置及自己的平台说明/本机经验；[execution.md](references/execution.md)中与自己相关的协作/暂停和客户端章节。不能触 ERP，不启动浏览器 |
+| 平台子代理 | 本文关键红线；[browseros-setup.md「按域注册与核验 helper」](references/browseros-setup.md#按域注册与核验-helper)；[业务规则](references/inquiry-rules.md)；[记录协议](references/run-protocol.md)的主字段和平台记录；本次设置及自己的平台说明/本机经验；首次绑定或跨运行映射时按需读[身份映射](references/identity-mapping.md)；[execution.md](references/execution.md)中与自己相关的协作/暂停和客户端章节。不能触 ERP，不启动浏览器 |
 | 单代理执行 | 主代理所需内容、完整业务规则、本次启用平台的说明/经验；[execution.md](references/execution.md)的主代理提问、单代理、收尾、停止/继续及遇到的暂停/故障章节 |
 | helper 缺失/需同步、维护或针对 helper 排错 | 按 [browseros-setup.md](references/browseros-setup.md#按域注册与核验-helper)按需读对应 `helpers/` 源码；ERP 接口地址/参数/响应 CONTRACT 以 [erpApi helper](helpers/_erp/erpApi.md)为维护对象 |
 
 平台说明：[淘宝](platforms/taobao.md)、[1688](platforms/1688.md)。本机经验在 `<数据目录>/learnings/<平台>.md`，存在时只读自己的平台。标「未实测」的页面做法要核对结果，验证后记录经验。
+
+平台会话的首次绑定、跨运行复用及失效重绑按[当前账号身份映射](references/identity-mapping.md)。先从当前页面核实账号，再使用平台与该账号范围内的接收者/会话映射；无法核实账号则只按原字符串模式只读，不持久化或使用跨运行映射。映射成功仍须完整核对象、消息归属及就绪，不授权发消息，不改恢复未知发送和已结束店纪律。
 
 ## 运行前提醒
 

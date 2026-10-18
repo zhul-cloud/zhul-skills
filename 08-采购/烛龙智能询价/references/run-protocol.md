@@ -66,6 +66,7 @@ UI 报错、调用中断或看不清发送结果时保持 `pending`，记录待�
       "platform": "1688",
       "shop": "店铺或公司全称",
       "contact": "会话列表里显示的名字",
+      "identity": null,
       "url": "https://detail.1688.com/offer/....html",
       "itemIds": [456],
       "reusedFrom": null,
@@ -100,6 +101,7 @@ UI 报错、调用中断或看不清发送结果时保持 `pending`，记录待�
 ```
 
 - `task` 到 `lockedItems`：取自 `erpApi` 的 `task` 结果（见 [erp-api.md「选任务与读取」](erp-api.md#选任务与读取)）。`deadline` 是报价截止时刻；`reviewRequired` 为 `true` 时提交后要审核；`items[].itemId` 是 ERP 型号 ID，所有报价的 `itemId` 都用它。
+- `shops[].identity`：可选的[当前账号身份映射](identity-mapping.md)验证结果，未核实为 null 或缺省。来自当次 helper 的平台、具名账号、接收者、self 买家证据及 conversationId，独立商家页证据可选。`check` 验证结构、平台及已有 contact 一致；`merge`、恢复及 `finish` 归档保留。旧 run 不因缺此字段失效，它不改变原型号/店名防重复键，也不替代 pendingMessage、结束状态和计时事实。
 - `platforms`：本次启用的平台；`skippedPlatforms` 记跳过的平台和原因。每家店的 `platform` 必填。所有执行方式下，这里的每个平台都要有 `run-<平台>.json`，否则默认完整 `merge` 报错；部分草稿合并仅要求指定平台存在可校验文件。
 - `reusedFrom`：沿用以前报价的店填原记录的时间，其余为 `null`。
 - `status`：已回复、无货、挂牌价、未回复、自动回复。有价格的「已回复」「挂牌价」填进 ERP；无货按型号汇总判断，后两种只进本地记录。多型号店只有全部询问型号都明确无货才记整店「无货」，否则有人工回复就记「已回复」，保留已有报价。
@@ -155,6 +157,7 @@ UI 报错、调用中断或看不清发送结果时保持 `pending`，记录待�
 <数据目录>
 ├── settings.json           个人配置覆盖，首次保存时创建
 ├── config.json             ERP 地址
+├── contacts.json           当前平台/买家账号内的已核实接收者及多会话映射；首次remember/rebind时创建
 ├── records.jsonl           询价记录（每家店每个型号一行），用于防重复询价和统计
 ├── processed-tasks.jsonl   提交/跳过/转人工记录；未完真实 run 优先恢复，不重复询问
 ├── learnings\<平台>.md     本机新发现的页面事实，按平台分文件（见本文「本机经验」）
