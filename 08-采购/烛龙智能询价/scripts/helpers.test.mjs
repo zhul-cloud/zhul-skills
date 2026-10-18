@@ -212,6 +212,10 @@ test('registered content distinguishes current, known older official, and custom
     assert.equal(compareSource(previewKey, '```js\ninvalid\n```').status, 'unknown');
     assert.throws(() => compareSource(previewKey, '```js\ninvalid\n```\n```js\ninvalid\n```'));
     assert.equal(compareSource('_erp/erpApi', 'unknown older ERP', erp).action, 'sync');
+    assert.ok(officialHashes['_erp/erpApi'].includes('f51329c2401ac59366a36abafed957acb7a144c3e97c8b70e2bc7f11187b5776'));
+    const erpCurrent = helperSource('_erp/erpApi', erp);
+    assert.match(erpCurrent.source, /普通滑块按 references\/execution\.md 一次规则/);
+    assert.equal(compareSource('_erp/erpApi', erpCurrent.source, erp).status, 'current');
 });
 
 test('the previously registered official 1688 header reader is recognized for automatic DOM-fix update', () => {

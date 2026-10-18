@@ -26,7 +26,7 @@ Call it:
 - `verify` 用原 payload 和写入前基线重建与 save 相同的完整计划，检查新报价、保留报价、自动带入的其他型号草稿、无货说明、供应商与附件，并拒绝本次替换状态中的额外/重复行；审核流合法保留的旧已通过版本不当作额外待审核行。返回 `verifiedItemIds` 是实际核对范围，`snapshot` 来自同一次详情 GET。不能拿核对时新读取的 snapshot 作为原 expectedSnapshot。`inDoneList`、`filledCount`、`itemCount` 是任务汇总观察信息，不参与 `ok`，不能据此确认或否定本次写入。
 - 返回 `{ ok: true, ... }`；出错返回 `{ ok: false, error, ... }`：
   - `ERP_CONTRACT`：接口结构和下面 CONTRACT 记录的不一致（缺字段、类型变了、取值不认识、接口不存在）。停止 ERP 调用，按 [ERP 错误与重试边界](../../references/erp-api.md#erp-错误与重试边界)保存可独立完成的平台本地结果，本轮不取下一 IQ；提示「ERP 接口已修改，烛龙智能询价没有同步，请更新技能」，把 `problems` 写进实跑报告。
-  - `ERP_LOGIN`：没登录、读取无法续期或业务 PUT 授权失败，按 [ERP 登录准备](../../references/browseros-setup.md#erp-登录)先检查 owned 页与会话；AI 可准备登录页面和「记住我」，凭据、验证码由用户处理。已发/未知 save 仍只读核对。
+  - `ERP_LOGIN`：没登录、读取无法续期或业务 PUT 授权失败，按 [ERP 登录准备](../../references/browseros-setup.md#erp-登录)先检查 owned 页与会话；AI 可准备登录页面和「记住我」，凭据及其余验证由用户处理，普通滑块按[一次规则](../../references/execution.md#普通滑块仅尝试一次)。恢复后只读核验；已发/未知 save 仍只读核对。
   - `ERP_BIZ`：ERP 拒绝了这次请求（如「货期不在可选值内」）；只有明确 `writeAttempted:false` 才可按 [ERP 重试边界](../../references/erp-api.md#erp-错误与重试边界)纠错重试。已发或结果未知的 save（含草稿）只核对原 payload 和原基线，不重放。
   - `ERP_CONFLICT`：ERP 与持久化基线不同；保留当前 ERP，不自动换新基线重试，读回差异并转人工核对。
   - `ERP_HTTP`：网络或服务器错误、ERP 标签页不可用；只读请求或明确 `writeAttempted:false` 的 save 稍等后最多重试一次。已发或结果未知的 save（含草稿）只用原 payload 和原基线 verify，登录恢复不授权重放；仍失败按 [ERP 错误与重试边界](../../references/erp-api.md#erp-错误与重试边界)转人工。
@@ -266,7 +266,7 @@ async (browser, pageId, req) => {
     }
 
     if (res.login) return { fail: { ok: false, error: 'ERP_LOGIN', reason: res.reason,
-      hint: '按 references/browseros-setup.md 的 ERP 登录准备检查 owned 页与会话；AI 可准备登录页和「记住我」，凭据与验证码由用户处理，恢复后只读核验' } };
+      hint: '按 references/browseros-setup.md 的 ERP 登录准备检查 owned 页与会话；AI 可准备登录页和「记住我」，凭据及其余验证由用户处理；普通滑块按 references/execution.md 一次规则；恢复后只读核验' } };
     if (res.http === 404 || res.http === 405) return { fail: contractError(name, [{ path: url, expected: `${ep.method} 接口存在`, actual: `HTTP ${res.http}` }]) };
     if (res.http >= 500 || !res.json) return { fail: { ok: false, error: 'ERP_HTTP', endpoint: name, http: res.http } };
     const problems = [];
