@@ -27,6 +27,8 @@
 
 缓存 ID 缺失或名称漂移为 `CHAT_BINDING_STALE`；同接收者多匹配为 `CHAT_BINDING_AMBIGUOUS`；身份冲突为 `CHAT_BINDING_CONFLICT`。账号不可得、不一致或等待中变化分别为 `CHAT_ACCOUNT_UNAVAILABLE`、`CHAT_ACCOUNT_MISMATCH`、`CHAT_ACCOUNT_CHANGED`；接收者字段或 self 交叉证据不足分别为 `CHAT_RECIPIENT_UNAVAILABLE`、`CHAT_SELF_UNAVAILABLE`，self 矛盾为 `CHAT_SELF_IDENTITY`。这些都不表示无回复或无货，不触发消息重发。
 
+`CHAT_IDENTITY` 或加载超时不等于 ID 失效或无回复。先按 [暂停与恢复](execution.md#暂停与恢复)诊断实际页面和可能的验证阻塞；仅确证 ID 失效后才执行受约束重绑。
+
 `imPreviews` 仍只接受完整名称数组，不支持 binding。预览因同名歧义或缺项失败时，可对已有且仍可核验的 binding 精确只读；不能把预览失败当无回复，也不能改成未实现的 binding 预览调用。
 
 ## 持久接口
