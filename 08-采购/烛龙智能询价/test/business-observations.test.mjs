@@ -28,7 +28,7 @@ test('淘宝只从已核实锚点有限Fiber具名字段提取sellerId，不从U
 });
 
 function productEnvironment(platform, options = {}) {
-    const counts = { reads: 0, queries: 0 };
+    const counts = { reads: 0, bodyReads: 0, queries: 0 };
     const node = (text, visible = true) => ({
         get innerText() { counts.reads++; return text; },
         get textContent() { counts.reads++; return text; },
@@ -44,7 +44,11 @@ function productEnvironment(platform, options = {}) {
         rows: (options.rows || []).map((text) => node(text)),
         challenge: options.challenge ? [node('需要验证')] : [],
     };
-    const document = { querySelectorAll: (selector) => {
+    const document = { body: options.bodyMissing ? null : { get innerText() {
+        counts.bodyReads++;
+        if (options.forbidBody) assert.fail('错误页面不得读取正文');
+        return options.bodyText ?? '正常商品详情';
+    } }, querySelectorAll: (selector) => {
         counts.queries++;
         if (selector.startsWith('.nc_scale')) return nodes.challenge;
         if (selector === 'div[class^="ItemTitle--"]' || selector === '.title-content h1') return nodes.title;
@@ -54,8 +58,11 @@ function productEnvironment(platform, options = {}) {
         if (selector === 'a.delivery-limit') return [node('承诺24小时发货')];
         assert.fail(`未审查的选择器 ${selector}`);
     } };
-    const location = new URL(platform === 'taobao' ? 'https://item.taobao.com/item.htm?id=10001' : 'https://detail.1688.com/offer/10001.html');
-    return { counts, nodes, node, read: (input = { itemId: '10001', model: 'MODEL-A-01' }) => extract(platform, { document, location }, input, 'product-fields') };
+    const location = new URL(options.href ?? (platform === 'taobao' ? 'https://item.taobao.com/item.htm?id=10001' : 'https://detail.1688.com/offer/10001.html'));
+    const forbidden = () => assert.fail('详情片段不得访问网络或秘密存储');
+    const secretStorage = new Proxy({}, { get: forbidden });
+    return { counts, nodes, node, read: (input = { itemId: '10001', model: 'MODEL-A-01' }) => extract(platform,
+        { document, location, fetch: forbidden, XMLHttpRequest: forbidden, localStorage: secretStorage, sessionStorage: secretStorage }, input, 'product-fields') };
 }
 
 for (const platform of ['taobao', '1688']) {
@@ -89,6 +96,47 @@ for (const platform of ['taobao', '1688']) {
 test('淘宝同文可见标题重复可读，异文标题歧义拒绝', () => {
     assert.equal(productEnvironment('taobao', { titles: ['MODEL-A-01', 'MODEL-A-01'] }).read().ok, true);
     assert.equal(productEnvironment('taobao', { titles: ['MODEL-A-01', 'MODEL-B-01'] }).read().error, 'PRODUCT_FIELDS_UNAVAILABLE');
+});
+
+test('淘宝已知限制或登录URL先拒绝，不读页面正文或商品字段', () => {
+    for (const [href, error] of [
+        ['https://huodong.taobao.com/wow/z/app/default/safe-access-tips?token=synthetic-secret', 'PRODUCT_ACCESS_RESTRICTED'],
+        ['https://login.taobao.com/havanaone/login/login.htm?redirect=synthetic-secret', 'PRODUCT_LOGIN_REQUIRED'],
+    ]) {
+        const env = productEnvironment('taobao', { href, forbidBody: true });
+        assert.deepEqual(env.read(), { ok: false, error });
+        assert.deepEqual(env.counts, { reads: 0, bodyReads: 0, queries: 0 });
+    }
+});
+
+test('淘宝商品页完整SKU不能掩盖已知可见访问限制组合，优先于验证与字段读取', () => {
+    const env = productEnvironment('taobao', { challenge: true,
+        bodyText: '系统检测到当前访问存在异常\n恢复正常访问方式后，商品详情页将在一段时间后自动恢复' });
+    assert.deepEqual(env.read(), { ok: false, error: 'PRODUCT_ACCESS_RESTRICTED' });
+    assert.deepEqual(env.counts, { reads: 0, bodyReads: 1, queries: 0 });
+});
+
+test('淘宝普通异常描述可读，单条已知强风险提示保留未确认而不放行', () => {
+    assert.equal(productEnvironment('taobao', { bodyText: '商品异常处理说明，恢复正常后使用' }).read().ok, true);
+    for (const bodyText of ['系统检测到当前访问存在异常', '商品详情页将在一段时间后自动恢复']) {
+        const env = productEnvironment('taobao', { bodyText });
+        assert.deepEqual(env.read(), { ok: false, error: 'PRODUCT_PAGE_UNCONFIRMED' });
+        assert.deepEqual(env.counts, { reads: 0, bodyReads: 1, queries: 0 });
+    }
+});
+
+test('淘宝错商品/未知页及无法核页面正文保持失败，不读取错页或秘密', () => {
+    for (const href of ['https://item.taobao.com/item.htm?id=10002&token=synthetic-secret', 'https://example.invalid/item.htm?id=10001']) {
+        const env = productEnvironment('taobao', { href, forbidBody: true });
+        assert.deepEqual(env.read(), { ok: false, error: 'PRODUCT_IDENTITY' });
+        assert.deepEqual(env.counts, { reads: 0, bodyReads: 0, queries: 0 });
+    }
+    for (const options of [{ bodyMissing: true }, { bodyText: ' \n\t' }]) {
+        const env = productEnvironment('taobao', options);
+        assert.deepEqual(env.read(), { ok: false, error: 'PRODUCT_PAGE_UNCONFIRMED' });
+        assert.equal(env.counts.reads, 0);
+        assert.equal(env.counts.queries, 0);
+    }
 });
 
 test('1688标题命中不能掩盖独立SKU为其他型号或较长后缀', () => {
