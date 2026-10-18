@@ -94,6 +94,7 @@ test('ERP source host follows explicit URL while the function remains portable t
 test('ERP keeps its published predecessor hash for migration without trusting unknown content', () => {
     const key = '_erp/erpApi';
     assert.ok(officialHashes[key].includes('e662e6634773133cd9c8cf38d4d685f9a14719b1164e593533da689ef81fd7ec'));
+    assert.ok(officialHashes[key].includes('7b1ecfc8471b4b92d499c4b6bd52ba4749940fad08a5e30515d5838886002bd3'));
     assert.equal(compareSource(key, helperSource(key, erp).source, erp).status, 'current');
     assert.equal(compareSource(key, 'unknown customized ERP', erp).status, 'unknown');
 });

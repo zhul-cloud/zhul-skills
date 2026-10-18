@@ -154,6 +154,21 @@ const t = async (name, state, req, check) => {
 // 1. 读任务：超过 4KB 的详情能分段取回；新增字段进 extraFields
 await t('task 大响应分段 + 新字段', { detail: baseDetail([], [], true, { brandNew: 'x' }) }, { op: 'task', taskId: 1 },
   (o) => o.ok && o.run.items.length === 2 && o.run.items[0].links['淘宝'][1].endsWith('Keyence%20ES-M1') && o.extraFields.includes('detail.data.items[].brandNew'));
+for (const keyword of ['6ES7214-1AG40-0XB0', '西门子 S7-1200 CPU1214C', '西门子 S7-1200 CPU1212C', '型号 A&B+C/规格?#%']) {
+  const detail = baseDetail(); detail.items[0].searchKeywords = [keyword];
+  await t(`搜索关键词字符集与query原文保留 ${keyword}`, { detail }, { op: 'task', taskId: 1 }, (o) => {
+    if (!o.ok) return false;
+    const links = o.run.items[0].links;
+    const alibaba = new URL(links['1688'][0]);
+    return alibaba.origin === 'https://s.1688.com'
+      && alibaba.pathname === '/selloffer/offer_search.htm'
+      && alibaba.searchParams.get('charset') === 'utf8'
+      && alibaba.searchParams.get('keywords') === keyword
+      && [...alibaba.searchParams].length === 2 && alibaba.hash === ''
+      && links['淘宝'][0] === 'https://s.taobao.com/search?q=' + encodeURIComponent(keyword)
+      && detail.items[0].searchKeywords[0] === keyword;
+  });
+}
 // 2. 存草稿：只带原有草稿，不带待审核和已通过的（否则会多出一份草稿）
 await t('存草稿不复制待审核/已提交', { detail: baseDetail([q({ status: 3, shopName: '店P' }), q({ status: 2, shopName: '店S' }), q({ status: 1, shopName: '店D' })]) },
   { op: 'save', taskId: 1, submit: false, items: fresh },

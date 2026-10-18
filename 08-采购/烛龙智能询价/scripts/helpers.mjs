@@ -15,7 +15,8 @@ const HELPERS = fileURLToPath(new URL('../helpers/', import.meta.url));
 export const officialHashes = {
     '_erp/erpApi': ['e662e6634773133cd9c8cf38d4d685f9a14719b1164e593533da689ef81fd7ec',
         'f51329c2401ac59366a36abafed957acb7a144c3e97c8b70e2bc7f11187b5776',
-        '3d2739343e2bb000225f224b2c73aa60803075d629c0c2e65cd2442c49e8a66b'],
+        '3d2739343e2bb000225f224b2c73aa60803075d629c0c2e65cd2442c49e8a66b',
+        '7b1ecfc8471b4b92d499c4b6bd52ba4749940fad08a5e30515d5838886002bd3'],
     'air.1688.com/imOpenAndRead': ['eb52007bea018df7c9caf4184966e7749a84cbfcd9ba5ca1d6ebe73fefd3a171',
         '98a65c0ae0d57d2a2e5c74fd0a45e86016f9008bfb11ce8a069f04bfb1e10b51',
         '09a535d8cb57b7d8993771173cdb70e41a9d3958714bc4c136b73f7eb01ba89f',

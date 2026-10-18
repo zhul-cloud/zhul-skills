@@ -81,8 +81,8 @@ async (browser, pageId, req) => {
       inquiry_lead_time: { '现货': 1, '1-2天': 2, '2-3天': 3, '3-5天': 4, '5-7天': 5, '1-2周': 6, '2-4周': 7, '4-8周': 8, '8周以上': 9 },
       inquiry_tax_rate: { '13%': 13, '3%': 3 },
     },
-    // 货源直达链接，与 ERP 前端 searchLinks 相同
-    searchLinks: { '淘宝': 'https://s.taobao.com/search?q=', '1688': 'https://s.1688.com/selloffer/offer_search.htm?keywords=' },
+    // 本技能以 encodeURIComponent 生成 UTF-8 关键词；1688 入口须明确字符集。
+    searchLinks: { '淘宝': 'https://s.taobao.com/search?q=', '1688': 'https://s.1688.com/selloffer/offer_search.htm?charset=utf8&keywords=' },
   };
 
   const page = browser.page(pageId);
