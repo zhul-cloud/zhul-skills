@@ -5,6 +5,7 @@ import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
+import { withCurrentData } from './data-lifecycle.mjs';
 import { fields, get, object, parseJson, readText, merge, readSettings, applyPatch, validateAt, writeSettings } from './config.mjs';
 
 const cell = (value) => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\|/g, '&#124;').replace(/`/g, '&#96;').replace(/\r?\n/g, '<br>');
@@ -45,6 +46,7 @@ function main(args) {
             }
         }
     }
+    const execute = () => {
     const state = readSettings({ validateEffective: !['set', 'reset'].includes(command) });
     if (command === 'json') {
         const { dataDir, defaultsPath, userSettingsPath, settings } = state;
@@ -81,6 +83,9 @@ function main(args) {
             }
         }
     }
+    };
+    if (['set', 'reset'].includes(command)) withCurrentData(execute);
+    else execute();
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
