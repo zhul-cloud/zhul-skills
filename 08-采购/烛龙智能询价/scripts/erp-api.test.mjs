@@ -600,6 +600,33 @@ await fault('携带首请求段的初始化中断仍保守标记未知写入并�
   (o, env) => o.error === 'ERP_HTTP' && o.writeAttempted === true && !JSON.stringify(o).includes('T1')
     && noSlots(env) && env.calls.every((c) => c.method !== 'PUT'));
 
+for (const field of ['taxIncluded', 'freeShipping', 'noStock']) {
+  for (const value of [null, 'false', 'true', 0, 1, [], {}]) {
+    const items = field === 'noStock' ? [{ itemId: 1, noStock: value, quotes: [] }]
+      : [{ itemId: 1, quotes: [{ ...fresh[0].quotes[0], [field]: value }] }];
+    for (const op of ['save', 'verify']) for (const submitted of [false, true]) {
+      await t(`${op} ${field}拒绝${JSON.stringify(value)}，模式${submitted}且零PUT`, { detail: baseDetail() },
+        { op, taskId: 1, items, [op === 'save' ? 'submit' : 'submitted']: submitted },
+        (o, s, env) => o.error === 'SKILL_INPUT' && o.problems.some((p) => p.path.endsWith(`.${field}`) && p.expected === 'boolean')
+          && (op !== 'save' || o.writeAttempted === false) && !s.lastPut && env.calls.every((c) => c.method !== 'PUT'));
+    }
+  }
+}
+for (const flags of [{ taxIncluded: false, freeShipping: false, noStock: false }, {}]) {
+  const { noStock, ...quoteFlags } = flags;
+  const items = [{ itemId: 1, ...(Object.hasOwn(flags, 'noStock') ? { noStock } : {}), quotes: [{ channel: '淘宝', shopName: '店B', unitPrice: 10, ...quoteFlags }] }];
+  await t(`合法false/省略报价布尔默认${JSON.stringify(flags)}`, { detail: baseDetail() }, { op: 'save', taskId: 1, submit: false, items },
+    (o, s) => o.ok && s.lastPut.items[0].quotes[0].taxIncluded === false
+      && s.lastPut.items[0].quotes[0].freeShipping === (flags.freeShipping ?? true) && !s.lastPut.items[0].noStock);
+  await t(`noStock false/省略不造无货${JSON.stringify(flags)}`, { detail: baseDetail() },
+    { op: 'save', taskId: 1, submit: false, items: [{ ...items[0], quotes: [] }] },
+    (o, s, env) => o.error === 'SKILL_INPUT' && o.writeAttempted === false && !s.lastPut && env.calls.every((c) => c.method !== 'PUT'));
+}
+await t('ERP已有报价可选null保持兼容', { detail: baseDetail([q({ taxIncluded: null, freeShipping: null })]) },
+  { op: 'save', taskId: 1, submit: false, items: fresh },
+  (o, s) => o.ok && s.lastPut.items[0].quotes.find((x) => x.shopName === '店A').taxIncluded === false
+    && s.lastPut.items[0].quotes.find((x) => x.shopName === '店A').freeShipping === true);
+
 for (const r of results) console.log(`${r.pass ? 'PASS' : 'FAIL'}  ${r.name}${r.pass ? '' : '\n      ' + r.out + '\n      put=' + r.put}`);
 const passed = results.filter((r) => r.pass).length;
 console.log(`${passed}/${results.length} 通过`);

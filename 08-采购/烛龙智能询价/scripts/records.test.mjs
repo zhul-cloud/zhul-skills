@@ -539,6 +539,49 @@ test('full noStock is emitted and a known quote takes precedence', (t) => {
     assert.equal(items[1].noStock, true);
 });
 
+for (const field of ['taxIncluded', 'freeShipping']) {
+    test(`${field} rejects explicit non-booleans before check/merge/ERP conversion/finish writes`, (t) => {
+        const f = fixture(t);
+        for (const value of [null, 'false', 'true', 0, 1, [], {}]) {
+            const shops = [shop({ quotes: [quote(11, { taxRate: 13, [field]: value })] })];
+            f.write('run.json', run({ shops }));
+            f.write('run-淘宝.json', part('淘宝', { shops }));
+            f.write('run-1688.json', part('1688', { skipped: '用户本次不用该平台' }));
+            const before = readFileSync(f.path, 'utf8');
+            for (const args of [['check', f.dir, '淘宝'], ['merge', f.dir], ['erp-items', f.path, '--draft'], ['erp-items', f.path], ['finish', f.path]]) {
+                const result = f.cli(...args);
+                assert.notEqual(result.status, 0, `${args[0]} accepted ${field}=${JSON.stringify(value)}`);
+                assert.match(result.stderr, new RegExp(field));
+                assert.equal(readFileSync(f.path, 'utf8'), before);
+                for (const file of ['records.jsonl', 'processed-tasks.jsonl']) assert.equal(existsSync(join(f.home, '.zhul-trade-sourcing', file)), false);
+            }
+        }
+    });
+}
+
+test('quote booleans preserve false, true and omitted defaults in ERP conversion and archives', (t) => {
+    const f = fixture(t);
+    for (const flags of [{ taxIncluded: false, freeShipping: false }, { taxIncluded: true, freeShipping: true }, {}]) {
+        const value = quote(11, { taxRate: 13, ...flags });
+        if (!Object.keys(flags).length) {
+            delete value.taxIncluded;
+            delete value.freeShipping;
+            assert.equal(Object.hasOwn(value, 'taxIncluded'), false);
+            assert.equal(Object.hasOwn(value, 'freeShipping'), false);
+        }
+        f.write('run.json', run({ shops: [shop({ quotes: [value] })] }));
+        for (const suffix of [[], ['--draft']]) {
+            const value = f.json('erp-items', f.path, ...suffix).items[0].quotes[0];
+            assert.equal(value.taxIncluded, flags.taxIncluded ?? false);
+            assert.equal(value.freeShipping, flags.freeShipping ?? true);
+        }
+        f.ok('finish', f.path);
+        const archived = f.lines('records.jsonl').at(-1);
+        assert.equal(archived.taxIncluded, flags.taxIncluded ?? false);
+        assert.equal(archived.freeShipping, flags.freeShipping ?? true);
+    }
+});
+
 for (const price of ['100元', '   ', 'NaN', 'Infinity', '1e309', true, [], {}]) {
     test(`check and erp-items reject invalid price ${JSON.stringify(price)}`, (t) => {
         const shops = [shop({ quotes: [quote(11, { price })] })];
