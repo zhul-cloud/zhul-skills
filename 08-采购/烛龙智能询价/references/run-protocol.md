@@ -18,7 +18,7 @@
 新 run 创建时立即写 `{ task, status: "running", createdAt, items: [], platforms: [], submitted: false }`。仅未初始化且没有平台/消息事实的空骨架，恢复时允许首次补入 ERP task，不拿空 snapshot 对账；已有实际断点则不得覆盖。主代理首次读取 ERP 后补齐任务信息和持久化 `erpSnapshot`（见 [ERP 协议](erp-api.md#选任务与读取)）。恢复时读原 `run.json`、各平台文件、未决发送/人助、草稿回执和提交尝试；ERP 新读取不得覆盖原 `deadline`、会话进度或旧基线。先与旧基线核对现 ERP，冲突时不写；检查上轮执行者已停止后，才明确恢复本轮。
 
 - `completedPlatforms` 只用于避免重派询价；ERP 未写回的结果由主代理补写草稿。用户明确跳过也需平台文件 `status: "completed"` 和非空 `skipped` 原因。
-- `interrupted` 恢复先只读停止期间新回复、未决人助及发送证据，保留原 `sentAt` / `followUpAt` / `replyAt` / `followUps` / `answeredTopics` / `thankYou` / `deadline`。本身真正业务结束的店不再联系；未知发送不得盲重发，已过消息时限的新回复只提取报价，不重开对话。
+- `interrupted` 恢复先按[逐项检查](execution.md#访问限制与逐项检查)核平台可访问及登录/风险解除，再按原绑定只读停止期间新回复、未决人助及发送证据，保留原 `sentAt` / `followUpAt` / `replyAt` / `followUps` / `answeredTopics` / `thankYou` / `deadline`。本身真正业务结束的店不再联系；未知发送不得盲重发，已过消息时限的新回复只提取报价，不重开对话。
 - 平台中断置 `stopAfterTask: true`；其他平台继续至结束，本轮不提交、不取下一 IQ。只有用户新一轮启动、核实断点及解除阻塞后，主代理才显式清除本轮停止标记；`merge` 不自动清除。中断不是后台恢复授权。
 - 正常报价截止按原业务规则完成收尾的平台可记 `completed`，即使有 `incompleteItems`。全部平台完成后，有效报价仍可正式提交，缺价的未完成型号进 `skipItemIds`；不能把此情形混成执行中断。
 
