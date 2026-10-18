@@ -51,6 +51,49 @@ test('version reads the actual skill version and absolute directory without crea
     assert.equal(existsSync(join(f.home, '.zhul-trade-sourcing')), false);
 });
 
+const shopIdentity = () => ({ platform: '淘宝', account: { type: 'loginNick', value: '匿名买家', source: 'site-nav-login-info-nick' },
+    recipient: { targetId: 'seller-test', targetType: '3', bizType: '11001', entityType: 'U', channelType: 3, source: 'conversationIdentifier.target' },
+    buyer: { targetId: 'buyer-test', targetType: '3', uid: 'buyer-test@cntaobao', displayName: '匿名买家', source: 'self-message' },
+    conversationId: 'opaque-conversation', contact: '测试店', headerName: '测试店', verifiedAt: now(), businessIdentity: null });
+test('可选店级身份通过partial/check/merge并随finish归档，原业务字段保留', (t) => {
+    const f = fixture(t); const identity = shopIdentity();
+    f.write('run-淘宝.json', part('淘宝', { shops: [shop({ identity })] }));
+    f.write('run-1688.json', part('1688'));
+    f.ok('check', f.dir, '淘宝', '--partial');
+    f.ok('merge', f.dir);
+    assert.deepEqual(JSON.parse(readFileSync(f.path, 'utf8')).shops[0].identity, identity);
+    f.ok('finish', f.path);
+    const archived = f.lines('records.jsonl')[0];
+    assert.deepEqual(archived.identity, identity);
+    assert.equal(archived.shop, '测试店');
+    assert.equal(archived.model, 'MODEL-A');
+});
+test('店级身份平台/账号/UID不符会拒绝check与merge，不覆盖原run', (t) => {
+    const f = fixture(t); const before = readFileSync(f.path, 'utf8');
+    for (const change of [(i) => { i.platform = '1688'; }, (i) => { i.account.source = 'history-message'; }, (i) => { i.buyer.uid = 'different@cntaobao'; }]) {
+        const identity = shopIdentity(); change(identity);
+        f.write('run-淘宝.json', part('淘宝', { shops: [shop({ identity })] }));
+        assert.notEqual(f.cli('check', f.dir, '淘宝', '--partial').status, 0);
+        assert.notEqual(f.cli('merge', f.dir, '--partial', '淘宝').status, 0);
+        assert.equal(readFileSync(f.path, 'utf8'), before);
+    }
+});
+test('同run恢复保留identity及未知发送/追问/停止断点，不写新身份替代旧证据', (t) => {
+    const f = fixture(t); const dir = f.json('open-run', 'IQ-IDENTITY').runDir;
+    const identity = shopIdentity();
+    const record = shop({ identity, followUps: 1, followUpAt: ago(3),
+        pendingMessage: { kind: 'followUp', text: '未确认发送', preparedAt: ago(2), state: 'pending' } });
+    const path = join(dir, 'run.json');
+    writeFileSync(path, JSON.stringify(run({ task: 'IQ-IDENTITY', shops: [record], stopAfterTask: true })));
+    const before = readFileSync(path, 'utf8');
+    const restored = f.json('open-run', 'IQ-IDENTITY');
+    assert.equal(restored.resumed, true); assert.equal(restored.runDir, dir); assert.equal(restored.stopAfterTask, true);
+    assert.equal(readFileSync(path, 'utf8'), before);
+    assert.deepEqual(JSON.parse(before).shops[0].identity, identity);
+    assert.equal(JSON.parse(before).shops[0].pendingMessage.state, 'pending');
+    assert.notEqual(f.cli('erp-items', path).status, 0);
+});
+
 test('ERP hosts default to HTTP while full addresses retain scheme, origin and non-default ports', (t) => {
     const f = fixture(t);
     const dataDir = join(f.home, '.zhul-trade-sourcing');

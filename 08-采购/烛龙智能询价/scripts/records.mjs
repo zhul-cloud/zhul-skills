@@ -40,6 +40,7 @@ const HELPERS_DIR = process.env.BROWSEROS_HELPERS_DIR;
 
 const [cmd, ...args] = process.argv.slice(2);
 let SETTINGS;
+let validateIdentity;
 
 const STATUSES = ['已回复', '无货', '挂牌价', '未回复', '自动回复'];
 // 因店家提问停止聊天的结束原因，这两种要在 stopQuestion 里记下问题类型，供 stats 统计
@@ -389,6 +390,8 @@ function validateRun(run) {
         const at = `shops 第 ${n + 1} 家（${s.shop ?? '未命名'}）`;
         if (!String(s.shop ?? '').trim()) problems.push(`${at}：缺少店铺名称`);
         if (!String(s.platform ?? '').trim()) problems.push(`${at}：缺少 platform（平台）`);
+        if (s.identity != null) problems.push(...validateIdentity(s.identity, s.platform).map((problem) => `${at}：${problem}`));
+        if (s.identity != null && s.contact && s.contact !== s.identity.contact) problems.push(`${at}：contact 与已核实 identity.contact 不一致`);
         if (!STATUSES.includes(s.status)) problems.push(`${at}：status 只能是 ${STATUSES.join(' / ')}`);
         for (const key of ['sentAt', 'followUpAt', 'replyAt']) {
             if (s[key] != null && s[key] !== '' && !validTime(s[key])) problems.push(`${at}：${key} 应为有效时间`);
@@ -661,6 +664,7 @@ function finish(runPath) {
                 archiveKey, archiveRow, recordedAt: now,
                 time, task: run.task, platform, reusedFrom: s.reusedFrom ?? null, model: modelOf.get(String(q.itemId)) ?? '',
                 shop: s.shop, contact: s.contact ?? '', url: s.url ?? '', status: s.status, reply: s.reply ?? '',
+                ...(s.identity != null ? { identity: s.identity } : {}),
                 price: s.status === '无货' ? '无货' : String(q.price ?? ''),
                 taxIncluded: !!q.taxIncluded, taxRate: q.taxRate ?? null,
                 condition: q.condition ?? '', leadTime: q.leadTime ?? '', freeShipping: q.freeShipping !== false, sentAt: s.sentAt ?? '',
@@ -728,7 +732,10 @@ function stats(arg) {
 
 try {
     // version 仍可只复制 records.mjs 和 SKILL.md 运行，不读取或校验配置。
-    if (cmd !== 'version') SETTINGS = (await import('./config.mjs')).readSettings().settings;
+    if (cmd !== 'version') {
+        SETTINGS = (await import('./config.mjs')).readSettings().settings;
+        validateIdentity = (await import('./contacts.mjs')).identityProblems;
+    }
     if (cmd === 'version') {
         version();
     } else if (cmd === 'init') {

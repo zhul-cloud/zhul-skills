@@ -7,7 +7,8 @@ const plain = (value) => JSON.parse(JSON.stringify(value));
 
 // 不打开浏览器。模拟已知DOM契约，验证对象筛选/拒绝边界；实际选择器兼容性仍须真实UI核验。
 function environment(platform, names, header = '目标店', controls = [], options = {}) {
-    const counts = { clicks: 0, messages: 0, previews: 0, company: 0, evaluate: 0, observers: 0, timers: 0, listeners: 0 };
+    const counts = { clicks: 0, messages: 0, previews: 0, company: 0, evaluate: 0, observers: 0, timers: 0, listeners: 0, directIds: 0 };
+    const account = { value: '买家账号' };
     const observers = new Set();
     const timers = new Set();
     const listeners = new Set();
@@ -20,7 +21,16 @@ function environment(platform, names, header = '目标店', controls = [], optio
         get innerText() { counts.previews++; return `${name}\n12:00\n最后一条提到目标店`; },
         click: () => { counts.clicks++; active = name; options.onClick?.(state); },
     }));
-    for (const item of items) item.closest = (selector) => selector === '.conversation-item' ? item : null;
+    for (const item of items) {
+        item.closest = (selector) => selector === '.conversation-item' ? item : null;
+        const original = item.querySelector;
+        item.querySelector = (selector) => selector === '.content' ? item : original(selector);
+        item.classList = { contains: (name) => name === 'conversation-item' };
+        item.__reactFiber$fixture = { return: { memoizedProps: { conversation: { get conversationCode() { return item.id; }, channelType: 3,
+            conversationIdentifier: { entityType: 'U', bizType: platform === 'market.m.taobao.com' ? '11001' : '11152',
+                target: { targetId: `recipient:${names[items.indexOf(item)]}`, targetType: platform === 'market.m.taobao.com' ? '3' : '8' } } } } } };
+    }
+    const conversationList = { __reactFiber$fixture: { return: { memoizedProps: { get currentLoginId() { return account.value; } } } } };
     const headerNode = {
         get innerText() { return header + renderedControls.map((c) => c.text).join(''); },
         cloneNode: () => {
@@ -49,8 +59,10 @@ function environment(platform, names, header = '目标店', controls = [], optio
         querySelectorAll: (selector) => selector === '.next-loading' ? [loading] : selector === '.nameLine' ? [companyNode] : [],
     };
     const doc = {
+        getElementById: (id) => { counts.directIds++; return items.find((item) => item.id === id) || null; },
         querySelector: (selector) => selector === '.conversation-header' ? headerNode : selector === '.nameLine' ? { innerText: '目标公司' } : null,
         querySelectorAll: (selector) => {
+            if (selector === '.conversation-list') return [conversationList];
             if (selector === '.conversation-item' || selector === '.content') return items;
             if (selector === '.conversation-item.active') return items.filter((_, i) => names[i] === active);
             if (selector === '.message-item') return messages;
@@ -59,14 +71,14 @@ function environment(platform, names, header = '目标店', controls = [], optio
         },
     };
     const iframe = { contentDocument: doc };
-    const document = { querySelector: () => iframe, querySelectorAll: () => [iframe],
+    const document = { querySelector: () => iframe, querySelectorAll: (selector) => selector === '.site-nav-login-info-nick' ? [{ get textContent() { return account.value; } }] : [iframe],
         addEventListener: (event, callback) => { listeners.add(callback); counts.listeners = listeners.size; },
         removeEventListener: (event, callback) => { listeners.delete(callback); counts.listeners = listeners.size; } };
-    const state = { message, items, iframe, doc, notify, profile, loading, companyNode,
+    const state = { message, items, iframe, doc, notify, profile, loading, companyNode, account, conversationList,
         setMessages: (value) => { messages = value; }, setHeader: (value) => { header = value; },
         setActive: (value) => { active = value; },
         load: () => { for (const callback of listeners) callback(); } };
-    const context = { document, Date: { now: options.now || Date.now },
+    const context = { document, TextEncoder, Date: class extends Date { static now() { return options.now ? options.now() : Date.now(); } },
         MutationObserver: class {
             constructor(callback) { this.callback = callback; }
             observe() { observers.add(this); counts.observers = observers.size; }
@@ -81,13 +93,17 @@ function environment(platform, names, header = '目标店', controls = [], optio
     const page = {
         evaluate: async (fn, arg) => {
             counts.evaluate++;
-            return { value: await runInNewContext(`(${fn})`, context)(plain(arg)) };
+            if (options.failChunk && typeof arg === 'object' && Number.isInteger(arg?.i)) return { writtenToFile: true };
+            const value = await runInNewContext(`(${fn})`, context)(plain(arg));
+            return Buffer.byteLength(JSON.stringify(value), 'utf8') > 5000
+                ? { writtenToFile: true, contentLength: Buffer.byteLength(JSON.stringify(value), 'utf8') }
+                : { value };
         },
         waitForTime: async () => {},
     };
     const browser = { page: () => page };
     const fn = (name) => runInNewContext(`(${helperSource(`${platform}/${name}`).source})`);
-    return { counts, state, call: async (name, input) => plain(await fn(name)(browser, 42, input)) };
+    return { counts, state, context, call: async (name, input) => plain(await fn(name)(browser, 42, input)) };
 }
 
 for (const platform of ['market.m.taobao.com', 'air.1688.com']) {
@@ -513,3 +529,135 @@ test('1688空档案不能成功；非空后继承完整结果，迟到则仍超�
         cleaned(env);
     }
 });
+
+function identifiedEnvironment(platform, options = {}) {
+    const env = environment(platform, ['目标店'], '目标店', [], options);
+    const type = platform === taobao ? '3' : '8';
+    const message = env.state.message;
+    message.classList.contains = (name) => name === 'self';
+    message.querySelector = (selector) => selector === '.nick' ? { get textContent() { return '买家账号'; } } : null;
+    const data = message.__reactFiber$fixture.return.return.memoizedProps.message;
+    data.sender = { targetId: 'buyer-1', targetType: type };
+    data.receiver = { targetId: 'recipient:目标店', targetType: type };
+    data.originPaasMessageData = { message: { sender: { uid: 'buyer-1@cntaobao' } } };
+    return env;
+}
+for (const platform of [taobao, ali1688]) {
+    test(`${platform}真实自身消息receiver为空仍凭会话与sender身份核验`, async () => {
+        const env = identifiedEnvironment(platform);
+        const data = env.state.message.__reactFiber$fixture.return.return.memoizedProps.message;
+        data.receiver = { targetId: '', targetType: '' };
+        const out = await env.call('imOpenAndRead', { op: 'read', contact: '目标店' });
+        assert.equal(out.ok, true);
+        assert.equal(out.identity.buyer.uid, 'buyer-1@cntaobao');
+        cleaned(env);
+    });
+    for (const content of ['中文', '转义']) for (const failure of [false, true]) test(`${platform}长${content}记录分段传输并回收，失败=${failure}`, async () => {
+        const env = identifiedEnvironment(platform, { failChunk: failure });
+        const message = env.state.message;
+        const text = (content === '中文' ? '完整中文聊天记录测试' : '测试中文引号"与反斜线\\\\').repeat(160);
+        Object.defineProperty(message, 'innerText', { value: text });
+        if (platform === ali1688) env.state.setMessages(Array(20).fill(message));
+        const out = await env.call('imOpenAndRead', { op: 'read', contact: '目标店' });
+        assert.equal(out.ok, !failure);
+        if (!failure) assert.ok(Buffer.byteLength(JSON.stringify(out), 'utf8') > (content === '中文' ? 5000 : 4000));
+        if (failure) assert.equal(out.error, 'CHAT_RESULT_TRANSPORT');
+        else if (platform === taobao) assert.equal(out.conv, text.slice(-1500));
+        else assert.deepEqual(out.msgs, Array(20).fill({ self: true, text: text.slice(0, 300) }));
+        assert.ok(env.counts.evaluate > 2);
+        assert.equal(Object.keys(env.context).filter((key) => key.startsWith('__zhul_chat_')).length, 0);
+        cleaned(env);
+    });
+    test(`${platform} account模式在未选会话时返回具名账号且零点击/正文`, async () => {
+        const env = identifiedEnvironment(platform);
+        const out = await env.call('imOpenAndRead', { op: 'account' });
+        assert.equal(out.ok, true);
+        assert.equal(out.account.value, '买家账号');
+        assert.equal(out.account.type, platform === taobao ? 'loginNick' : 'loginId');
+        assert.equal(env.counts.clicks, 0);
+        assert.equal(env.counts.messages, 0);
+    });
+    test(`${platform}首次核验产生可持久身份，缓存active读取不重复click`, async () => {
+        const env = identifiedEnvironment(platform);
+        const first = await env.call('imOpenAndRead', { op: 'read', contact: '目标店' });
+        assert.equal(first.ok, true);
+        assert.equal(first.identity.buyer.uid, 'buyer-1@cntaobao');
+        assert.equal(first.identity.recipient.targetId, 'recipient:目标店');
+        assert.equal(first.identity.businessIdentity, null);
+        const second = await env.call('imOpenAndRead', { op: 'read', binding: first.identity });
+        assert.equal(second.ok, true);
+        assert.equal(env.counts.clicks, 1);
+        assert.equal(env.counts.directIds, 2);
+        cleaned(env);
+    });
+    test(`${platform}错误账号/接收者/UID缓存均拒绝且零正文`, async () => {
+        const first = await identifiedEnvironment(platform).call('imOpenAndRead', { op: 'read', contact: '目标店' });
+        for (const variant of ['account', 'recipient', 'uid']) {
+            const binding = structuredClone(first.identity);
+            if (variant === 'account') binding.account.value = '另一买家';
+            if (variant === 'recipient') binding.recipient.targetId = '另一接收者';
+            if (variant === 'uid') binding.buyer.uid = '另一uid';
+            const env = identifiedEnvironment(platform);
+            const out = await env.call('imOpenAndRead', { op: 'read', binding });
+            assert.equal(out.ok, false);
+            assert.equal(env.counts.messages, 0);
+            cleaned(env);
+        }
+    });
+    test(`${platform}同名不同recipient不能借重绑模式读取正文`, async () => {
+        const first = await identifiedEnvironment(platform).call('imOpenAndRead', { op: 'read', contact: '目标店' });
+        first.identity.recipient.targetId = '其他店的ID';
+        const env = identifiedEnvironment(platform);
+        const out = await env.call('imOpenAndRead', { op: 'rebind', binding: first.identity });
+        assert.equal(out.error, 'CHAT_BINDING_STALE');
+        assert.equal(env.counts.messages, 0);
+        assert.equal(env.counts.clicks, 0);
+    });
+    test(`${platform}同recipient新会话ID可只读重新发现并核验`, async () => {
+        const first = await identifiedEnvironment(platform).call('imOpenAndRead', { op: 'read', contact: '目标店' });
+        first.identity.conversationId = '不存在的旧ID';
+        const env = identifiedEnvironment(platform);
+        const stale = await env.call('imOpenAndRead', { op: 'read', binding: first.identity });
+        assert.equal(stale.error, 'CHAT_BINDING_STALE');
+        assert.equal(env.counts.messages, 0);
+        const found = await env.call('imOpenAndRead', { op: 'rebind', binding: first.identity });
+        assert.equal(found.ok, true);
+        assert.equal(found.identity.conversationId, 'chat:目标店');
+        cleaned(env);
+    });
+    test(`${platform}外层/当前账号变化不能与旧self消息组成新绑定`, async () => {
+        const env = identifiedEnvironment(platform);
+        env.state.account.value = '已切换的新账号';
+        assert.equal((await env.call('imOpenAndRead', { op: 'read', contact: '目标店' })).error, 'CHAT_SELF_IDENTITY');
+        assert.equal(env.counts.messages, 0);
+        cleaned(env);
+    });
+    test(`${platform}缓存精确ID不受另一同名ID影响，旧名称模式仍拒绝`, async () => {
+        const env = identifiedEnvironment(platform);
+        const first = await env.call('imOpenAndRead', { op: 'read', contact: '目标店' });
+        const other = { ...env.state.items[0], id: 'other-conversation' };
+        other.closest = () => other;
+        const query = other.querySelector;
+        other.querySelector = (selector) => selector === '.content' ? other : query(selector);
+        env.state.items.push(other);
+        assert.equal((await env.call('imOpenAndRead', { op: 'read', binding: first.identity })).ok, true);
+        assert.equal((await env.call('imOpenAndRead', '目标店')).error, 'CHAT_AMBIGUOUS');
+        cleaned(env);
+    });
+    test(`${platform}等待中账号或recipient漂移先拒绝，不碰富消息和公司正文`, async () => {
+        const first = await identifiedEnvironment(platform).call('imOpenAndRead', { op: 'read', contact: '目标店' });
+        for (const changed of ['account', 'recipient']) {
+            const env = identifiedEnvironment(platform, { onClick: (state) => {
+                if (changed === 'account') state.account.value = '另一账号';
+                else state.items[0].__reactFiber$fixture.return.memoizedProps.conversation.conversationIdentifier.target.targetId = '另一接收者';
+            } });
+            env.state.message.querySelectorAll = () => { assert.fail('不得读占位正文'); };
+            Object.defineProperty(env.state.companyNode, 'innerText', { get() { assert.fail('不得读公司正文'); } });
+            const out = await env.call('imOpenAndRead', { op: 'read', binding: first.identity });
+            assert.equal(out.ok, false);
+            assert.equal(out.error, changed === 'account' ? 'CHAT_ACCOUNT_CHANGED' : 'CHAT_BINDING_CONFLICT');
+            assert.equal(env.counts.messages, 0);
+            cleaned(env);
+        }
+    });
+}
