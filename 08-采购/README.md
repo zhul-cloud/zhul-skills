@@ -4,7 +4,7 @@
 
 | 技能 | 当前版本 | 用途 |
 |---|---|---|
-| [烛龙智能询价](烛龙智能询价/SKILL.md) | 2.7.1 | 读取 ERP 任务 → 淘宝、1688 找店询价与跟进 → 提交回价；指定任务只做一个，未指定则逐个处理全部待处理任务 |
+| [烛龙智能询价](烛龙智能询价/SKILL.md) | 2.7.2 | 读取 ERP 任务 → 淘宝、1688 找店询价与跟进 → 提交回价；指定任务只做一个，未指定则逐个处理全部待处理任务 |
 
 维护者负责规则、设置、ERP 合同、平台适配、站点脚本和用户文档的一致性，以及相应验证。版本变化记入[技能 CHANGELOG](烛龙智能询价/CHANGELOG.md)；尚未实施的需求归入 [ROADMAP.md](ROADMAP.md)。
 
@@ -71,22 +71,22 @@ node "<技能目录>/scripts/records.mjs" stats 30
 
 1. 按 `problems` 和 ERP 改动更新 `CONTRACT` 的地址、字段、字典取值，以及使用这些字段的代码。
 2. ERP 新增字段会列入 `extraFields`，不影响运行；确认要用或不用后补进约定，不用的写 `'any?'`。
-3. 在仓库的技能目录运行 `node scripts/erp-api.test.mjs`；离线模拟通过后，再在获授权的开发 ERP 测试任务验证 `ping`、`list`、`task`，保存一次草稿并 `verify`，核对后清理测试草稿。`checkedAt` 仅记录实际核对合同的日期，不能只因离线测试通过而改成当天；提交语义变化还需获授权验证测试提交及提交后核对。不把测试操作放到真实商家询价中。
+3. 在仓库的技能目录运行 `node test/erp-api.test.mjs`；离线模拟通过后，再在获授权的开发 ERP 测试任务验证 `ping`、`list`、`task`，保存一次草稿并 `verify`，核对后清理测试草稿。`checkedAt` 仅记录实际核对合同的日期，不能只因离线测试通过而改成当天；提交语义变化还需获授权验证测试提交及提交后核对。不把测试操作放到真实商家询价中。
 4. 同步相关技能文件、版本和 `CHANGELOG.md`；影响用户操作时更新使用手册。按仓库更新流程发放后，用户通过 `git pull --ff-only` 更新。
 
 ## 按改动选择验证
 
-以下命令从 `烛龙智能询价/` 目录运行。使用临时测试数据，不改用户真实数据；测试文件保留在 `scripts/`。
+以下命令从 `烛龙智能询价/` 目录运行。使用临时测试数据，不改用户真实数据；测试文件集中在 `test/`，`scripts/` 只保留运行工具。运行全部测试用 `node --test` 自动发现，不依赖 shell 或 Node 新版展开 glob；单项使用下表明确路径。
 
 | 改动范围 | 最小验证 | 能证明与不能证明 |
 |---|---|---|
 | 用户文档、名称、路径、加载导航 | 检查相对链接与锚点、版本一致性、安装和 CLI 示例与实际接口一致；只读 `node scripts/records.mjs version` | 能核对文档和本地版本，不代表安装到真实用户环境或远程已发布 |
-| 本机记录、心跳、校验、合并、ERP 输入转换 | `node scripts/records.test.mjs`；必要时补对应失败场景 | 证明隔离环境下的确定性行为，不证明真实平台聊天成功 |
-| 配置合并、查看、校验、个人覆盖更新/恢复默认 | `node scripts/settings.mjs check`；`node scripts/settings.mjs json`；`node scripts/settings.test.mjs`；涉及 records 读取时运行 `node scripts/records.test.mjs` | 证明当前有效配置及隔离环境中的默认继承、稀疏覆盖、reset 指定项/全部恢复、参数拒绝和写入边界；不证明子代理模型可用或真实询价效果 |
-| ERP helper 或合同 | `node scripts/erp-api.test.mjs`；按上节在获授权的开发 ERP 核对受影响操作 | 离线覆盖模拟接口；只有实际测试环境的结果才能证明真实接口兼容 |
-| helper 提取、适配、CLI 入口或注册协议 | `node scripts/helpers.test.mjs`；改 helper 或适配包装时，按[域注册维护细则](烛龙智能询价/references/browseros-setup.md#按域注册与核验-helper)保留受影响 helper 的旧官方完整适配源码 hash，覆盖旧注册同步、定制保留及安装链接更新；核对当前 SDK 契约并实际跨 `run` 验证 | 离线适配与 API 文档不能代替真实 helper 加载/调用，文件复制或删除也不能证明运行时状态 |
-| 聊天 helper 对象筛选与拒绝边界 | `node scripts/chat-helpers.test.mjs`；再用对应平台本任务对象核验真实 DOM | 模拟 DOM 能证明空名、前缀/重复名、预览误命中和标题不符被拒绝；不能代替真实选择器、会话读取或发送验收 |
-| 账号范围的身份映射、持久化/失效重绑及归档 | `node scripts/contacts.test.mjs`、`node scripts/business-observations.test.mjs`、`node scripts/records.test.mjs`；两聊天 helper 另做已有目标只读实测 | 用隔离 HOME 与原配置/ERP地址/业务文件 sentinel 检查账号隔离、同接收者多会话、CAS/损坏拒绝、具名 sellerId 来源、受约束重绑和归档保留；不能代替账号切换、商家发送或新询价实测 |
+| 本机记录、心跳、校验、合并、ERP 输入转换 | `node test/records.test.mjs`；必要时补对应失败场景 | 证明隔离环境下的确定性行为，不证明真实平台聊天成功 |
+| 配置合并、查看、校验、个人覆盖更新/恢复默认 | `node scripts/settings.mjs check`；`node scripts/settings.mjs json`；`node test/settings.test.mjs`；涉及 records 读取时运行 `node test/records.test.mjs` | 证明当前有效配置及隔离环境中的默认继承、稀疏覆盖、reset 指定项/全部恢复、参数拒绝和写入边界；不证明子代理模型可用或真实询价效果 |
+| ERP helper 或合同 | `node test/erp-api.test.mjs`；按上节在获授权的开发 ERP 核对受影响操作 | 离线覆盖模拟接口；只有实际测试环境的结果才能证明真实接口兼容 |
+| helper 提取、适配、CLI 入口或注册协议 | `node test/helpers.test.mjs`；改 helper 或适配包装时，按[域注册维护细则](烛龙智能询价/references/browseros-setup.md#按域注册与核验-helper)保留受影响 helper 的旧官方完整适配源码 hash，覆盖旧注册同步、定制保留及安装链接更新；核对当前 SDK 契约并实际跨 `run` 验证 | 离线适配与 API 文档不能代替真实 helper 加载/调用，文件复制或删除也不能证明运行时状态 |
+| 聊天 helper 对象筛选与拒绝边界 | `node test/chat-helpers.test.mjs`；再用对应平台本任务对象核验真实 DOM | 模拟 DOM 能证明空名、前缀/重复名、预览误命中和标题不符被拒绝；不能代替真实选择器、会话读取或发送验收 |
+| 账号范围的身份映射、持久化/失效重绑及归档 | `node test/contacts.test.mjs`、`node test/business-observations.test.mjs`、`node test/records.test.mjs`；两聊天 helper 另做已有目标只读实测 | 用隔离 HOME 与原配置/ERP地址/业务文件 sentinel 检查账号隔离、同接收者多会话、CAS/损坏拒绝、具名 sellerId 来源、受约束重绑和归档保留；不能代替账号切换、商家发送或新询价实测 |
 | 平台页面、机器人/结束信号或 BrowserOS 工具调用 | 在对应平台和当前工具版本作获授权 UI 验证，记录已实测/未实测边界 | 页面读取测试不等于已验证消息发送、回复跟进或完整询价 |
 | 跨文件流程或运行协议 | 运行受影响的 records、ERP 离线测试，并检查入口、协议、规则、平台说明一致性；真实业务部分另行授权验证 | 离线通过不能表述为真实浏览器、ERP 或商家业务已通过 |
 

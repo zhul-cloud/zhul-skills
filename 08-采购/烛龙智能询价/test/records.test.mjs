@@ -5,7 +5,8 @@ import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync,
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const script = fileURLToPath(new URL('./records.mjs', import.meta.url));
+const testDir = dirname(fileURLToPath(import.meta.url));
+const script = fileURLToPath(new URL('../scripts/records.mjs', import.meta.url));
 const now = () => new Date().toISOString();
 const ago = (minutes) => new Date(Date.now() - minutes * 60000).toISOString();
 const quote = (itemId = 11, extra = {}) => ({ itemId, price: 100, taxIncluded: false, ...extra });
@@ -14,7 +15,7 @@ const run = (extra = {}) => ({ task: 'IQ-TEST', taskId: 1, items: [{ itemId: 11,
 const part = (platform = '淘宝', extra = {}) => ({ platform, shops: [], noStock: [], stages: { repliesDone: now() }, ...extra });
 
 function fixture(t, value = run()) {
-    const root = mkdtempSync(join(dirname(script), '.records-test-'));
+    const root = mkdtempSync(join(testDir, '.records-test-'));
     const home = join(root, 'home');
     const dir = join(root, 'run');
     mkdirSync(home);

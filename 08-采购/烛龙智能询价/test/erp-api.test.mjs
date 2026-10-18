@@ -1,5 +1,5 @@
 // ERP 接口脚本 erpApi 的离线测试：用模拟的 ERP 和 page.evaluate（返回超过 4000 字节时像 BrowserOS 一样只给文件引用）。
-// 不连 ERP、不需要浏览器。改了 helpers/_erp/erpApi.md 之后运行：node scripts/erp-api.test.mjs
+// 不连 ERP、不需要浏览器。改了 helpers/_erp/erpApi.md 之后运行：node test/erp-api.test.mjs
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';

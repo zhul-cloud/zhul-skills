@@ -4,16 +4,17 @@ import { spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { fields, writeSettings } from './config.mjs';
+import { fields, writeSettings } from '../scripts/config.mjs';
 
-const script = fileURLToPath(new URL('./settings.mjs', import.meta.url));
+const testDir = dirname(fileURLToPath(import.meta.url));
+const script = fileURLToPath(new URL('../scripts/settings.mjs', import.meta.url));
 const source = readFileSync(new URL('../settings.json', import.meta.url), 'utf8');
 const defaults = JSON.parse(source);
 const get = (value, key) => key.split('.').reduce((part, name) => part?.[name], value);
 
 function fixture(t) {
     // Windows 沙箱系统 Temp 的 rename 替换受限，夹具全部留在工作区并清理。
-    const root = mkdtempSync(join(dirname(script), '.settings-test-'));
+    const root = mkdtempSync(join(testDir, '.settings-test-'));
     const skill = join(root, '中文技能 with spaces');
     const scripts = join(skill, 'scripts');
     const home = join(root, 'isolated-home');
