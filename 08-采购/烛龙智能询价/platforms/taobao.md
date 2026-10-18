@@ -4,7 +4,7 @@
 
 | 站点 | 脚本 | 作用 |
 |---|---|---|
-| s.taobao.com | `helpers["zhul_taobao_searchCandidates"](browser, pageId, model)` | 搜索结果第一页的精简候选：`[排名, 商品ID, 标价, 付款人数, 型号匹配, 疑似非全新, 广告]` |
+| s.taobao.com | `helpers["zhul_taobao_searchCandidates"](browser, pageId, { model, mode: "current-dom" })` | 当前 DOM 的直达商品候选；每项 `legacy` 为 `[排名, 商品ID, 标价, 付款人数, 型号匹配, 疑似非全新, 广告]`，另带独立 `title`、`productUrl` |
 | market.m.taobao.com | `helpers["zhul_taobao_imPreviews"](browser, pageId, keys)` | 按完整列表名精确且唯一匹配的会话预览，不点开；不以预览文字匹配店铺 |
 | market.m.taobao.com | `helpers["zhul_taobao_imOpenAndRead"](browser, pageId, key)` | 按完整列表名唯一打开，核对 active、标题、每条消息归属及富消息就绪后读取末尾最多 1500 字符；未就绪最多等 2200ms，缺可信绑定安全失败 |
 
@@ -16,8 +16,8 @@
 ## 2 搜索
 
 1. 在自己的标签页里用地址打开货源直达里的淘宝链接（`https://s.taobao.com/search?q=...`），不在 ERP 页面上点击，等商品列表出现。
-2. 调用 `zhul_taobao_searchCandidates` 读第一页候选，第三参传原型号字符串。不要把整页文字或大段结果直接返回：结果太大时 BrowserOS 会写进文件、只给文件引用。
-3. 按第 3 节从这条链接的结果里挑店，家数按 `shopsPerLink`。挑完在同一个标签页打开下一条淘宝链接，同样挑店，直到所有淘宝链接都做完（见 [inquiry-rules.md「找店与挑店」](../references/inquiry-rules.md#找店与挑店)）；前面链接里判断过的商品 ID 直接跳过。所有链接都没有型号匹配的店，该型号在淘宝按无货处理。
+2. 用表中的对象调用，`model` 传原型号；一次读取当前 DOM 的全部直达商品候选、独立标题和商品 URL，按[共同候选规则](../references/inquiry-rules.md#找店与挑店)判断覆盖和失败。`title` 来自卡片独立标题节点，不从卡片店名猜取。当前适配 `item.taobao.com/item.htm` 和 `detail.tmall.com/item.htm` 直达路径；其他路径须现场核验。`click.simba.taobao.com` 跟踪跳转不在直达商品范围，不为补候选打开推广链接。
+3. 按第 3 节从这条链接的结果里挑店，家数按 `shopsPerLink`。挑完在同一个标签页打开下一条淘宝链接，同样挑店，直到所有淘宝链接都做完；前面链接里判断过的商品 ID 直接跳过。所有链接均已确认覆盖且没有型号匹配的店，才按共同规则处理无货；不能把读取失败或尚未加载的候选当作无货。
 
 ## 3 挑店
 
@@ -31,6 +31,34 @@
 6. **搜索卡片上的店名读不准**（会读到「11年老店」「LS」这类标签），进商品页后再确认店名，同一家店只问一次，同一型号的不同链接搜到的也一样。
 7. 商品页的店铺信息里有评分、「客服平均 N 秒回复」「平均 N 小时发货」「近期发货慢」：回复慢、发货慢的往后排。
 8. 用 `browser.open` 打开商品页时可能多出重复标签；按[共享浏览器归属与清理规则](../references/execution.md#共享浏览器)记录并核实。
+
+### 商品详情一次读取
+
+当前任务商品页已就绪且归属明确后，在同一次 `page.evaluate` 中执行下面函数，参数 `{ itemId, model }` 均来自本任务已核候选和原型号。只读标题、独立 SKU 和店铺头部评分/发货原文，避免逐字段快照；相同标题可有重复可见节点，不能把用户评价里的标题算入。返回字段不是最终规格或商家身份结论，后续核对仍按[共同挑店规则](../references/inquiry-rules.md#找店与挑店)。
+
+```js
+({ itemId, model }) => {
+  // zhul-product-fields: taobao
+  if (typeof itemId !== 'string' || !/^\d+$/.test(itemId) || typeof model !== 'string' || !model.trim()) return { ok: false, error: 'SKILL_INPUT' };
+  const url = new URL(location.href);
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || !['item.taobao.com', 'detail.tmall.com'].includes(url.hostname) || url.pathname !== '/item.htm' || url.searchParams.get('id') !== itemId) return { ok: false, error: 'PRODUCT_IDENTITY' };
+  const visible = (e) => e.getClientRects().length > 0;
+  if ([...document.querySelectorAll('.nc_scale,.nc_wrapper,[role=slider],[class*=captcha]')].some(visible)) return { ok: false, error: 'VISIBLE_VERIFICATION' };
+  const titles = [...document.querySelectorAll('div[class^="ItemTitle--"]')].filter(visible).map((e) => e.innerText.split('\n')[0].trim());
+  const shops = [...document.querySelectorAll('a[class*="detailWrap--"]')].filter(visible);
+  const sku = [...document.querySelectorAll('span[class*="valueItemText--"]')].filter(visible).map((e) => e.textContent.trim());
+  if (!titles.length || new Set(titles).size !== 1 || !titles[0] || shops.length !== 1 || !sku.length) return { ok: false, error: 'PRODUCT_FIELDS_UNAVAILABLE' };
+  const shop = shops[0], shopName = shop.innerText.split('\n')[0].trim();
+  let shopUrl;
+  try { shopUrl = new URL(shop.href); } catch { return { ok: false, error: 'PRODUCT_FIELDS_UNAVAILABLE' }; }
+  if (!shopName || !['http:', 'https:'].includes(shopUrl.protocol) || shopUrl.username || shopUrl.password || !/(^|\.)(taobao|tmall)\.com$/.test(shopUrl.hostname)) return { ok: false, error: 'PRODUCT_FIELDS_UNAVAILABLE' };
+  const exactSku = sku.filter((s) => s.replace(/\s/g, '') === model);
+  return { ok: exactSku.length > 0, ...(exactSku.length ? {} : { error: 'PRODUCT_MODEL_UNCONFIRMED' }), itemId, title: titles[0], exactSku,
+    shopName, shopUrl: shopUrl.origin + shopUrl.pathname, shopHeader: shop.innerText.trim() };
+}
+```
+
+缺 SKU、标题或唯一店铺时不能成功选店；按当前页实际就绪状态补核。URL 的商品 ID 对应不单独证明旧 DOM 已更新，须核实当前商品与店铺入口对应，已有商家身份按下文具名来源交叉核对。验证命中按[暂停与恢复](../references/execution.md#暂停与恢复)分流；未命中这些 DOM 结构也不能排除验证，不固定等待或反复刷新。片段没有改价格/发货排序、店铺去重或发送守卫。
 
 ## 4 聊天页：始终只保留一个
 

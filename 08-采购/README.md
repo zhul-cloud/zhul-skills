@@ -4,7 +4,7 @@
 
 | 技能 | 当前版本 | 用途 |
 |---|---|---|
-| [烛龙智能询价](烛龙智能询价/SKILL.md) | 2.7.3 | 淘宝、1688询价、跟进与ERP回价，支持指定任务或批量处理（执行入口见技能说明） |
+| [烛龙智能询价](烛龙智能询价/SKILL.md) | 2.7.4 | 淘宝、1688询价、跟进与ERP回价，支持指定任务或批量处理（执行入口见技能说明） |
 
 维护者负责规则、设置、ERP 合同、平台适配、站点脚本和用户文档的一致性，以及相应验证。版本变化记入[技能 CHANGELOG](烛龙智能询价/CHANGELOG.md)；尚未实施的需求归入 [ROADMAP.md](ROADMAP.md)。
 
@@ -85,6 +85,7 @@ node "<技能目录>/scripts/records.mjs" stats 30
 | ERP helper 或合同 | `node test/erp-api.test.mjs`；按上节在获授权的开发 ERP 核对受影响操作 | 离线覆盖模拟接口；只有实际测试环境的结果才能证明真实接口兼容 |
 | helper 提取、适配、CLI 入口或注册协议 | `node test/helpers.test.mjs`；改 helper 或适配包装时，按[域注册维护细则](烛龙智能询价/references/browseros-setup.md#按域注册与核验-helper)保留受影响 helper 的旧官方完整适配源码 hash，覆盖旧注册同步、定制保留及安装链接更新；核对当前 SDK 契约并实际跨 `run` 验证 | 离线适配与 API 文档不能代替真实 helper 加载/调用，文件复制或删除也不能证明运行时状态 |
 | 聊天 helper 对象筛选与拒绝边界 | `node test/chat-helpers.test.mjs`；再用对应平台本任务对象核验真实 DOM | 模拟 DOM 能证明空名、前缀/重复名、预览误命中和标题不符被拒绝；不能代替真实选择器、会话读取或发送验收 |
+| 搜索候选、覆盖与结果传输 | `node --test test/search-helpers.test.mjs test/helpers.test.mjs`；再在真实页面比较旧行、新模式完整候选、标题/URL、字节与完整调用耗时 | 匿名 DOM 和传输模拟证明兼容及拒绝边界；成功仅覆盖当前 DOM，不证明页面已全载、详情合格或整轮询价提速 |
 | 账号范围的身份映射、持久化/失效重绑及归档 | `node test/contacts.test.mjs`、`node test/business-observations.test.mjs`、`node test/records.test.mjs`；两聊天 helper 另做已有目标只读实测 | 用隔离 HOME 与原配置/ERP地址/业务文件 sentinel 检查账号隔离、同接收者多会话、CAS/损坏拒绝、具名 sellerId 来源、受约束重绑和归档保留；不能代替账号切换、商家发送或新询价实测 |
 | 平台页面、机器人/结束信号或 BrowserOS 工具调用 | 在对应平台和当前工具版本作获授权 UI 验证，记录已实测/未实测边界 | 页面读取测试不等于已验证消息发送、回复跟进或完整询价 |
 | 跨文件流程或运行协议 | 运行受影响的 records、ERP 离线测试，并检查入口、协议、规则、平台说明一致性；真实业务部分另行授权验证 | 离线通过不能表述为真实浏览器、ERP 或商家业务已通过 |

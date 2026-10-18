@@ -105,6 +105,19 @@ test('淘宝 keeps the fixed-wait published predecessor hash when updating its r
     assert.equal(compareSource(key, helperSource(key).source.replace('const contact =', '// local change\n  const contact =')).action, 'preserve');
 });
 
+test('search evidence upgrades retain both published legacy hashes and preserve unknown custom helpers', () => {
+    for (const [key, previous] of [
+        ['s.taobao.com/searchCandidates', 'f7f4a7f7b772523cef0734398245fcafb014c35de02bd8b083d5f45ccc7f45a1'],
+        ['s.1688.com/searchCandidates', 'caf4e50921472230841d302f543f44db1a6735da93f4cca31ee70f807ed6bf98'],
+    ]) {
+        assert.ok(officialHashes[key].includes(previous));
+        const current = helperSource(key);
+        assert.notEqual(current.sha256, previous);
+        assert.equal(compareSource(key, current.source).status, 'current');
+        assert.equal(compareSource(key, current.source.replace('const detailed =', '// local change\n  const detailed =')).action, 'preserve');
+    }
+});
+
 test('extraction accepts CRLF and fails closed on missing/duplicate blocks or changed signature', () => {
     const source = 'async (browser, pageId, req) => { return req; }';
     assert.equal(extractSource(`before\r\n\`\`\`js\r\n${source}\r\n\`\`\`\r\nafter`), source);
@@ -134,6 +147,7 @@ for (const entry of entries) {
                             // Simulate no-token login: actual helper handles the failure and performs no HTTP.
                             return arg?.method ? { login: true, reason: 'no-token' } : true;
                         }
+                        if (entry.originalName === 'searchCandidates') return { value: [[1, 'anonymous-product', 10, 0, 1, 0, 0]] };
                         return { value: { test: entry.sourceKey, input: arg } };
                     },
                     waitForTime: async (ms) => { calls.push({ op: 'waitForTime', ms }); },
@@ -154,6 +168,11 @@ for (const entry of entries) {
                 assert.equal(actual.output.input.contact, input);
                 assert.equal(actual.output.input.headerName, input);
                 assert.equal(actual.output.input.mode, 'legacy');
+            } else if (entry.originalName === 'searchCandidates') {
+                const request = actual.calls.find((call) => call.op === 'evaluate');
+                assert.equal(request.arg.model, input);
+                assert.equal(request.arg.detailed, false);
+                assert.deepEqual(actual.output, [[1, 'anonymous-product', 10, 0, 1, 0, 0]]);
             } else {
                 assert.deepEqual(actual.output.input, input);
             }
