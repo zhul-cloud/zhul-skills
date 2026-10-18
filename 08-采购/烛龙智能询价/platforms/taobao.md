@@ -94,7 +94,7 @@
 - 已核实的会话可按[当前账号身份映射](../references/identity-mapping.md)复用：先核当前 loginNick，再用已存 binding 精确只读；名称预览歧义或缺项时不当作无回复，可转已核 binding 的 ID 读取。首次和失效重绑均保留完整身份及就绪核验，不从客服 sender 或店铺域名推导商家 ID。
 - 用 `zhul_taobao_imPreviews` 看这几家的预览；预览变了，用 `zhul_taobao_imOpenAndRead` 点开读取末尾消息；恢复、未知发送或完整报价证据不足时另行只读核对对应会话，不能把截取缺失当成未发或无报价。
 - **只看预览不会把消息标为已读**，未读红点会一直留着。读到回复后，必须点开该会话一次。
-- 会话列表显示店名，聊天对象可能是客服子账号。`run.json` 的 `contact` 记会话列表上显示的名字。
+- 会话列表显示店名，聊天对象可能是客服子账号。平台记录的 `shops[].contact` 记会话列表上显示的名字，按[记录协议](../references/run-protocol.md#受控保存与事件)保存后由主代理合并。
 - 聊天 helper 的字符串 `key` / `keys` 必须是本任务完整列表名。已核实标题别名时，打开函数可传 `{ contact: "完整列表名", headerName: "已核实标题身份" }`；不接受空名，零匹配/多匹配或标题不符不读取消息。当前选择器须在真实页面核验；`CHAT_DOM` / `CHAT_MESSAGES_UNAVAILABLE` 等失败不表示无回复，转按当前快照核对目标区域，不能退回整页截取。
 - 打开读取以页面变化触发核验：唯一 active 的非空会话 ID 必须与所有当前消息的 `conversationCode` 一致。当前适配仅从消息 DOM 的有限 React Fiber 链读取这一绑定；有 alternate 消息时也须一致，不读取全局会话存储。全部归属通过后，还检查消息是否有精确的「暂不支持的消息类型」占位节点；富消息可能稍后才显示机器人内容或客服评价，不能把占位当作完整正文。标题先切、旧消息残留、无消息、绑定缺失、冲突或富消息尚未渲染时继续等页面更新，最多 2200ms；到时返回 `timedOut:true` 及 `CHAT_IDENTITY`、`CHAT_MESSAGES_UNAVAILABLE`、`CHAT_BINDING_UNAVAILABLE`、`CHAT_MESSAGE_IDENTITY` 或 `CHAT_MESSAGES_RENDERING`，iframe 不可用为 `CHAT_DOM`。这些错误只表示未安全读到目标消息，不能当作店家无回复、无货或没有结束信号；转人工定位目标区域，不降低归属及完整性核验。这里的等待只用于页面就绪，店家回复等待仍按业务规则和本次有效设置计时。
 - 读整页文字时会带出账号的其他私人会话预览：只解析目标店铺的会话，其他内容不解析、不记录。

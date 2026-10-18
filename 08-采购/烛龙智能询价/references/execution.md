@@ -17,15 +17,17 @@
 
 **派发**：模型和思考深度按 `subagents` 里所用 AI 的配置（Claude Code 用 `subagents.claude`，Codex 用 `subagents.codex`；留空的项沿用默认）。给每个子代理的任务说明要写清：
 
-- 平台名称，以及它要读的文件：[SKILL.md「关键红线」](../SKILL.md#关键红线)、[browseros-setup.md「按域注册与核验 helper」](browseros-setup.md#按域注册与核验-helper)、[inquiry-rules.md](inquiry-rules.md)、[run-protocol.md「run.json」](run-protocol.md#runjson)及「平台记录与合并」、准备阶段通过 `settings.mjs json` 读取的本次 `settings` 合并值（直接传完整有效值，不传原始默认文件让子代理自行当作当前值）、需要解释时再读 [settings.md](settings.md)、`platforms/<平台>.md`，本机经验文件 `<数据目录>/learnings/<平台>.md`；
+- 平台名称，以及它要读的文件：[SKILL.md「关键红线」](../SKILL.md#关键红线)、[browseros-setup.md「按域注册与核验 helper」](browseros-setup.md#按域注册与核验-helper)、[inquiry-rules.md](inquiry-rules.md)、[run-protocol.md](run-protocol.md)的「受控保存与事件」「每日时间线与关键事件」「run.json」「平台记录与合并」、准备阶段通过 `settings.mjs json` 读取的本次 `settings` 合并值（直接传完整有效值，不传原始默认文件让子代理自行当作当前值）、需要解释时再读 [settings.md](settings.md)、`platforms/<平台>.md`，本机经验文件 `<数据目录>/learnings/<平台>.md`；
 - 本任务每个型号的 `itemId`、型号、数量和单位、系统话术、该平台的全部货源直达链接（`run.json` 里 `items[].links` 的该平台部分，按顺序），以及报价截止时刻 `deadline`。子代理写报价时 `itemId` 必须用这里给的值；
 - 按 [run-protocol.md「本地防重复」](run-protocol.md#本地防重复)查到的该平台结果（哪些店沿用、哪些店不再问），沿用报价也写入平台文件，因为合并时会按平台覆盖；
-- 本次目录路径和唯一可写的平台文件 `run-<平台>.json`，最新断点、平台 `status`、未决 `pendingMessage` 和人助请求；`completed` 平台不再派发询价，只由主代理补做 ERP 写回；
+- 本次目录路径、`runId` 和唯一负责的平台 scope，最新 `run-<平台>.json` 断点及 revision、平台 `status`、未决 `pendingMessage` 和人助请求；按[受控保存](run-protocol.md#受控保存与事件)用 `checkpoint` 保存，不直接覆盖平台 JSON；`completed` 平台不再派发询价，只由主代理补做 ERP 写回；
 - `confirmBeforeSend` 的值；
 - 浏览器约束：用 `name_session` 把会话命名为「inquiry <任务编号> taobao」或「inquiry <任务编号> 1688」（名称要含英文字母或数字），只在自己新开的标签页里操作，不动 ERP 页面、其他平台和用户的标签页；归属与收尾按[共享浏览器](#共享浏览器)规则。
 - 打卡和自检：挑店时每打开一条链接、每确认一家店，发询价和跟进时每一轮（查看一遍回复、发出一家），都执行 `node "<技能目录>/scripts/records.mjs" beat "<本次目录>" <平台> <在做什么>`（如「挑店 第 2 条链接」「等回复 3 家」）；停下等人处理时加 `--paused`。超过 `subagents.stallMinutes` 分钟没打卡，主代理会按卡住处理。关键动作先持久化，发送前记 `pendingMessage`，读回确认后再更新发送事实。所有店真正结束时写 `status: "completed"` 和 `stages.repliesDone`，执行 `records.mjs check "<本次目录>" <平台>` 自检，立即请求主代理代存草稿后再结束。中断时用 `check "<本次目录>" <平台> --partial` 核验断点，不能补造完成时间。
 
 **子代理不做的事**：不启动浏览器、不负责全局连接恢复、不打开或修改 ERP；不写 `run.json`、不执行 `records.mjs finish`；不直接向聊天中的用户提问，业务确认交主代理汇总。连接故障上报主代理，其他浏览器技术阻塞按下文「暂停与恢复」调用 BrowserOS 人助工具，并向主代理上报。
+
+派发、停止、暂停、续跑和平台完成通知，按[时间线事件](run-protocol.md#每日时间线与关键事件)分别记录信号已发出、已收到、已实际执行。发送者保存 sent，接收者收到才保存 received，执行者实际完成对应状态保存后才记 applied；工具已投递、代理空闲或心跳改变都不能代替后两项。无法取得某一步证据时保留未确认，主代理据最新断点和实际执行状态判断。业务/代理信号与操作系统进程信号分开；进程被强杀或断电且没有准确结束时刻时，不补造终止或业务完成时间。
 
 ### 共享浏览器
 
@@ -164,11 +166,15 @@
 
 ## 合并与记录失败
 
+记录均按[受控保存](run-protocol.md#受控保存与事件)使用目标 scope 的最新 revision；候选输入文件未成功提交前不算生效。CAS 冲突重读合并，pending 由受控写入口恢复；不手工删锁、删日志或覆盖权威 JSON 来消除错误。
+
 **平台完成即存草稿**：平台先持久化关键动作和最终结果、自检通过并通知主代理。主代理是唯一串行 ERP 写入者，执行 `records.mjs merge "<本次目录>" --partial <平台...>` 合并指定已持久快照，再用 `erp-items "<本次目录>/run.json" --draft` 生成已有报价并按 [ERP 协议](erp-api.md#草稿核对提交一次与再核对)存草稿、核对。其他平台继续，不等待全部结束才保存。ERP 不可用仍保留平台文件及待写回结果，不让平台自行写 ERP。
 
 **正式提交守卫**：仅所有平台均真正 `completed` 或用户明确跳过，且平台/ERP 人助都已核验解除，才默认 `merge` 并生成正式输入。暂停、`waiting`、未核验 `resolved`、`interrupted`、卡住/损坏收尾及 `watch finished` 都不证明业务完成。任一平台因人工失败中断时，只能留草稿；其他平台做完后本轮在此 IQ 结束，不取下一任务。ERP 人助未解除时仅保存本地结果/payload，不调用 ERP save。
 
-`merge` 失败时：格式错误可修正字段，不改报价事实；平台文件缺失或损坏时，保留原文件证据，让已停止的原执行者仅重写一次记录，禁止恢复询价或发送。仍失败则标 `interrupted` 和明确 `incompleteItems`，不能假写 `skipped` 代替故障，也不凭印象补价格。能核验的其他平台继续代存草稿，无法确认的报价不写 ERP。
+`merge` 失败时先区分业务字段错误与文件/身份损坏。平台 JSON 可解析、元数据和 runId 归属有效时，可读取最新 revision，依据可核实事实修正完整业务快照，经 `checkpoint` 校验保存，不改报价事实、不恢复询价或发送；新快照仍不合法就保留证据并报告。能合法保存时标 `interrupted` 和明确 `incompleteItems`，不能假写 `skipped` 或补造价格。
+
+平台 JSON 结构、元数据或身份损坏时，`readPart` 本身会拒绝，不能靠 `checkpoint` 重写修复；保留现场交维护者，不手删文件、覆盖身份或重建目录绕过。只有目标平台文件本来不存在时才允许以 revision 0 新建，也须依据实际证据，不删除坏文件冒充缺失。主记录仍合法时，主代理可经主 scope 的 `checkpoint` 在无 platform 的 `incidents` 记录真实平台异常并置 `stopAfterTask:true`；已保存且可校验的其他平台结果可指定 `merge --partial` 留草稿，无法确认的报价不写 ERP。主记录也不可合法保存时保留现有文件、停止依赖动作并报告，不声称中断状态已落盘。本轮不正式提交、不取下一 IQ。
 
 ### Claude Code 派发与续跑
 
@@ -197,6 +203,8 @@
 1. 按[共享浏览器](#共享浏览器)规则核实并清理本轮任务标签。自己的 ERP 标签页留着给下一个任务用，全部结束时再按同一规则清理。
 2. 按 [run-protocol.md「任务汇报」](run-protocol.md#任务汇报)向用户汇报，并按该文件「实跑报告」写报告；发现新的页面情况按该文件「本机经验」记录。
 
+收尾、中断与同版恢复均保存对应关键事件和已知阶段时间；`finish` 只归档现有事实，不补齐未执行阶段。耗时以真实起止和等待记录为依据，未知区间明确缺数据，完整口径见[时间线与耗时](run-protocol.md#每日时间线与关键事件)。
+
 ## 停止或继续
 
 1. 指定编号只做当前 IQ。批量只有当前任务正常完成（或按业务内容问题转人工且未发生平台中断）、本地 `finish`、报告和汇报完成后才取下一项。`stopAfterTask` 为 `true` 时不调用 `next`，即使其他平台正常完成也一样；新一轮用户启动并核实恢复条件后才可清除本轮停止标记。
@@ -217,7 +225,7 @@
 | 聊天页「连接断开」 | 按[会话失效或重连](#browseros-会话失效或重连)核归属、优先复用并保留原 binding 和断点；仅满足受控替换条件时换页，不动用户或其他任务页 |
 | 平台弹出需要选择的账号设置（如聊天工具） | 按「暂停与恢复」交用户处理浏览器页面；不以聊天输入框代替接管 |
 | 子代理卡住（`watch` 输出 `stalled`） | 按「子代理卡住时」处理：停掉它，保存 interrupted 断点，其他平台继续，留草稿、不提交、不取下一 IQ |
-| 合并失败（`merge` 报错） | 按本文「合并与记录失败」处理：格式问题主代理改，文件坏了让原子代理仅重写记录一次，仍不行按该节记 interrupted 和 incompleteItems |
+| 合并失败（`merge` 报错） | 按本文「合并与记录失败」区分：可读且身份有效的业务字段错误经 checkpoint 校验修复；JSON/元数据/身份损坏保留现场交维护者，不覆盖重写；主记录合法时保存真实异常与 stopAfterTask，保留其他有效平台结果 |
 | 子代理报错返回、中途出错 | 先查代理状态；等待超时不等于失败。确认原代理停止后，读取 `run-<平台>.json` 并核对已发送消息，再恢复原代理或重派；无法确认停止则暂停该平台，仍失败时保存 interrupted 断点并说明，不假写业务完成 |
 | 所用的 AI 派发子代理失败 | 先停止并核实已启动的平台代理，读取已有进度后改用单代理交替推进，在汇报里说明；无法确认停止的平台不重复接管 |
 | 站点脚本调用不到 | 按[域注册流程](browseros-setup.md#按域注册与核验-helper)仅核对本次相关域的实际源码；已知旧官方自动同步，未知本机差异保留报告；注册后下一次独立 `run` 读回 hash 并只读调用核验，不以停用域缺失阻塞本次；必要时按平台明文步骤操作 |

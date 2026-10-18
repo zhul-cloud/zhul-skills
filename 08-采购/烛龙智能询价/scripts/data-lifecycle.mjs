@@ -33,7 +33,7 @@ function safeParents() {
     safeNode(DATA_DIR);
     safeNode(LIFECYCLE_LOCK);
 }
-function currentVersion() {
+export function currentVersion() {
     const text = readText(join(skillDir, 'SKILL.md'), 'SKILL.md');
     const front = text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1];
     const rows = front?.split(/\r?\n/).filter((s) => s.startsWith('version:')) ?? [];
@@ -92,12 +92,19 @@ function removalPlan() {
     }
     visit(DATA_DIR); return plan;
 }
-function withLock(action) {
+function withLock(action, waitMs = 0) {
     safeParents();
     const token = randomUUID(); let locked = false;
     try {
-        try { writeFileSync(LIFECYCLE_LOCK, token, { flag: 'wx', mode: 0o600 }); locked = true; }
-        catch (e) { if (e.code === 'EEXIST') fail('DATA_BUSY', '另一初始化或写入持有生命周期锁；不自动删除锁'); throw e; }
+        const until = Date.now() + waitMs;
+        for (;;) {
+            try { writeFileSync(LIFECYCLE_LOCK, token, { flag: 'wx', mode: 0o600 }); locked = true; break; }
+            catch (e) {
+                if (e.code !== 'EEXIST') throw e;
+                if (Date.now() >= until) fail('DATA_BUSY', '另一初始化或写入持有生命周期锁；可原命令重试，不自动删除锁');
+                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+            }
+        }
         safeParents(); return action();
     } finally {
         if (locked) {
@@ -107,8 +114,11 @@ function withLock(action) {
         }
     }
 }
-export function withCurrentData(action) {
-    return withLock(() => { checkVersion(currentVersion(), true); return action(); });
+export function withCurrentData(action, { waitMs = 0 } = {}) {
+    return withLock(() => { checkVersion(currentVersion(), true); return action(); }, waitMs);
+}
+export function withDataRead(action, { waitMs = 0 } = {}) {
+    return withLock(action, waitMs);
 }
 export function initializeData(action) {
     // 只验证发布内容，不解析旧个人配置；坏默认值不能导致旧数据删除。
