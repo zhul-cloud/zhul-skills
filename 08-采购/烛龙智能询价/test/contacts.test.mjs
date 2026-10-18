@@ -4,23 +4,24 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync
 import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { identityProblems } from './contacts.mjs';
+import { identityProblems } from '../scripts/contacts.mjs';
 
-const script = fileURLToPath(new URL('./contacts.mjs', import.meta.url));
+const testDir = dirname(fileURLToPath(import.meta.url));
+const script = fileURLToPath(new URL('../scripts/contacts.mjs', import.meta.url));
 const identity = (platform = '淘宝', extra = {}) => ({ platform,
     account: { type: platform === '淘宝' ? 'loginNick' : 'loginId', value: '匿名买家', source: platform === '淘宝' ? 'site-nav-login-info-nick' : 'conversation-list.currentLoginId' },
     recipient: { targetId: 'seller-test', targetType: platform === '淘宝' ? '3' : '8', bizType: platform === '淘宝' ? '11001' : '11152', entityType: 'U', channelType: 3, source: 'conversationIdentifier.target' },
     buyer: { targetId: 'buyer-test', targetType: platform === '淘宝' ? '3' : '8', uid: 'buyer-test@cntaobao', displayName: '匿名买家', source: 'self-message' },
     conversationId: 'opaque-conversation-a', contact: '匿名店', headerName: '匿名店', verifiedAt: '2026-10-18T02:00:00.000Z', businessIdentity: null, ...extra });
 function fixture(t) {
-    const root = mkdtempSync(join(dirname(script), '.contacts-test-'));
+    const root = mkdtempSync(join(testDir, '.contacts-test-'));
     const home = join(root, 'home'); mkdirSync(home);
     const data = join(home, '.zhul-trade-sourcing'); mkdirSync(data);
     const sentinels = ['config.json', 'settings.json', 'records.jsonl', 'processed-tasks.jsonl'];
     for (const name of sentinels) writeFileSync(join(data, name), `sentinel:${name}`);
     t.after(() => {
         for (const name of sentinels) assert.equal(readFileSync(join(data, name), 'utf8'), `sentinel:${name}`);
-        assert.ok(resolve(root).startsWith(resolve(dirname(script)) + '\\') || resolve(root).startsWith(resolve(dirname(script)) + '/'));
+        assert.ok(resolve(root).startsWith(resolve(testDir) + '\\') || resolve(root).startsWith(resolve(testDir) + '/'));
         rmSync(root, { recursive: true, force: true });
     });
     const env = { ...process.env, HOME: home, USERPROFILE: home };

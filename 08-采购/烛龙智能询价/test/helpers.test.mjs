@@ -5,15 +5,16 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, syml
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
-import { adaptSource, compareSource, extractSource, helperSource, listHelpers, officialHashes } from './helpers.mjs';
+import { adaptSource, compareSource, extractSource, helperSource, listHelpers, officialHashes } from '../scripts/helpers.mjs';
 
-const script = fileURLToPath(new URL('./helpers.mjs', import.meta.url));
+const testDir = dirname(fileURLToPath(import.meta.url));
+const script = fileURLToPath(new URL('../scripts/helpers.mjs', import.meta.url));
 const erp = 'https://erp.example.invalid:8443';
 const entries = listHelpers(erp);
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
 function fixture(t) {
-    const root = mkdtempSync(join(dirname(script), '.helpers-test-'));
+    const root = mkdtempSync(join(testDir, '.helpers-test-'));
     t.after(() => rmSync(root, { recursive: true, force: true }));
     const absentHome = join(root, 'absent-home');
     const env = { ...process.env, HOME: absentHome, USERPROFILE: absentHome, BROWSEROS_HELPERS_DIR: join(root, 'absent-browser') };

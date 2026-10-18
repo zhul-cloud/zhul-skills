@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runInNewContext } from 'node:vm';
-import { helperSource } from './helpers.mjs';
+import { helperSource } from '../scripts/helpers.mjs';
 
 const plain = (value) => JSON.parse(JSON.stringify(value));
 

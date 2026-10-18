@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
-import { identityProblems } from './contacts.mjs';
+import { identityProblems } from '../scripts/contacts.mjs';
 
 const plain = (value) => JSON.parse(JSON.stringify(value));
 function extract(platform, context, input) {
