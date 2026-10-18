@@ -36,6 +36,8 @@ UI 报错、调用中断或看不清发送结果时保持 `pending`，记录待�
 
 以下落盘规则用于已有本次目录的任务；取任务准备期间尚无本次目录时，按[取任务前的人助](execution.md#取任务前的人助)处理，不虚构任务记录。
 
+人助前的[普通滑块一次尝试](execution.md#普通滑块仅尝试一次)使用现有 `incidents` 保存拖前意图和拖后结果；`detail` 保持字符串，包含同一阻塞事件标识及目标/时间。恢复须先检查意图，未知结果仍视为已尝试；事件保留不代表脚本强制防重，也不把自动失败计入人助核验失败次数。
+
 平台人助保存在本平台文件 `humanHelp`，ERP 写回人助由主代理保存在 `run.json.humanHelp`。至少记录范围、owner、requestId、目标标签/网址、BrowserOS 标签组 ID（可取得时）、请求创建时刻、状态和同一阻塞事件核验失败次数；会话句柄只在工具要求时保留，不写登录令牌。原生回包有 requestId 则原样保存；错误回包未给 ID 时记 `requestId:null`，保留原始返回和分类来源，不虚构 ID、不 await 不存在的请求。`status` 是工作流分类，`nativeStatus` 保留工具实际状态，工具未返回状态时为 `null`，另记 `statusSource`；不得补造原生返回。
 
 新请求及尚未核验的交回都记 `verified:false`。仅 owner 对原目标页实际核验解除后，当前事件才满足 `{ status: "resolved", verified: true, verifiedAt: "有效 ISO 时间" }`，继而清暂停；`resolved` 回包本身不等于解除。`waiting`、`pending`、`unknown`、失败、取消、超时或未核验交回都阻止平台 completed 和正式提交输入。无任何人助时此字段可缺省。`merge` 将平台当前事件保存在主文件 `platformHumanHelp.<平台>`，缺少字段不会清除已有阻塞；恢复必须明确写新的已核验事件，不能靠删除字段解除。
