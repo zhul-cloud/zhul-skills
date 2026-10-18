@@ -367,6 +367,9 @@ async (browser, pageId, req) => {
 
   // ----- 把技能整理的报价（文字取值）换成 ERP 码值，并带上本人原有的报价行 -----
   const toEntry = (q, dicts, where, problems) => {
+    for (const key of ['taxIncluded', 'freeShipping']) {
+      if (Object.hasOwn(q, key) && typeof q[key] !== 'boolean') problems.push({ path: `${where}.${key}`, expected: 'boolean', actual: q[key] });
+    }
     const channel = CONTRACT.enums.channel[q.channel];
     if (!channel) problems.push({ path: `${where}.channel`, expected: Object.keys(CONTRACT.enums.channel).join('/'), actual: q.channel });
     const condLabel = q.condition || '待确认';
@@ -448,6 +451,7 @@ async (browser, pageId, req) => {
     const body = { items: [], submit };
     const touched = new Set();
     for (const [n, it] of (req.items || []).entries()) {
+      if (Object.hasOwn(it, 'noStock') && typeof it.noStock !== 'boolean') problems.push({ path: `items[${n}].noStock`, expected: 'boolean', actual: it.noStock });
       const item = byId.get(it.itemId);
       if (!item) { problems.push({ path: `items[${n}].itemId`, expected: '本任务的型号', actual: it.itemId }); continue; }
       if (item.locked) continue; // 已报给客户的型号不能再改

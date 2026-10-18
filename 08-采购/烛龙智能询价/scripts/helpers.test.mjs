@@ -213,6 +213,7 @@ test('registered content distinguishes current, known older official, and custom
     assert.throws(() => compareSource(previewKey, '```js\ninvalid\n```\n```js\ninvalid\n```'));
     assert.equal(compareSource('_erp/erpApi', 'unknown older ERP', erp).action, 'sync');
     assert.ok(officialHashes['_erp/erpApi'].includes('f51329c2401ac59366a36abafed957acb7a144c3e97c8b70e2bc7f11187b5776'));
+    assert.ok(officialHashes['_erp/erpApi'].includes('3d2739343e2bb000225f224b2c73aa60803075d629c0c2e65cd2442c49e8a66b'));
     const erpCurrent = helperSource('_erp/erpApi', erp);
     assert.match(erpCurrent.source, /普通滑块按 references\/execution\.md 一次规则/);
     assert.equal(compareSource('_erp/erpApi', erpCurrent.source, erp).status, 'current');

@@ -410,6 +410,9 @@ function validateRun(run) {
             if (!ids.has(String(id))) problems.push(`${at}：itemIds 的 ${id} 不在本任务里`);
         }
         for (const q of s.quotes ?? []) {
+            for (const key of ['taxIncluded', 'freeShipping']) {
+                if (Object.hasOwn(q, key) && typeof q[key] !== 'boolean') problems.push(`${at}：itemId ${q.itemId} 的 ${key} 应为布尔值`);
+            }
             if (!ids.has(String(q.itemId))) problems.push(`${at}：itemId ${q.itemId} 不在本任务里`);
             else if (s.itemIds && !s.itemIds.some((id) => String(id) === String(q.itemId))) problems.push(`${at}：报价 itemId ${q.itemId} 不在这家店的 itemIds 里`);
             if (q.price != null && q.price !== '' &&

@@ -127,6 +127,8 @@ UI 报错、调用中断或看不清发送结果时保持 `pending`，记录待�
 
 ## 平台记录与合并
 
+`shops[].quotes` 的 `taxIncluded`、`freeShipping` 若提供必须为布尔值，不能写 `null` 或字符串 `"false"` 等非布尔值。省略时分别按 `false`、`true` 处理；`check`、`merge`、`erp-items` 和 `finish` 校验一致，拒绝时不改记录或归档。主记录的 `noStock` 仍为列表，不改为布尔值。
+
 所有执行方式统一由本平台执行者写 `run-<平台>.json`，主代理串行合并。字段含义同主文件；下面 `shops` 的 `"..."` 仅为省略示意：
 
 ```json
