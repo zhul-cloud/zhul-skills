@@ -62,5 +62,3 @@ node "<技能目录>/scripts/contacts.mjs" rebind --file "<请求JSON>"
 3. 已核实 ID 失效时，先对本账号旧绑定执行受约束的 helper rebind。成功后以原 lookup revision 执行 contacts rebind；失败则明确标记/报告失效及原因，不能盲发送。
 4. 平台记录保存可选 `shops[].identity`。旧 run 无该字段继续兼容；`check` 验证结构、平台及 contact 一致性，`merge` 保留，`finish` 随实际归档报价保留。它不重置 sentAt、追问、结束状态或 pendingMessage，也不改变原 recent 防重复键。
 5. 恢复未知发送先按原断点核聊天证据；已结束店只按恢复协议只读核证据，不能以 rebind 或缓存失效授权重新联系。任何消息仍按既有发送前核对象及发送后读回规则执行，本接口不提供发送批处理。
-
-本轮验证只使用隔离 HOME 的临时映射及业务文件 sentinel；已有真实聊天只读验收不等于真实新询价、发送或账号切换实测。
