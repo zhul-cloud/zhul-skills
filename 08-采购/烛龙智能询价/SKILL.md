@@ -1,7 +1,7 @@
 ---
 name: 烛龙智能询价
 description: 为 ERP「我的询价」执行淘宝、1688 找店询价、跟进回复和提交回价；用于用户委托采购询价任务、明确调用本技能时的 start/询价/开始/处理或 IQ 任务编号，以及本技能用法/版本/更新/统计/settings/配置查看与修改请求。普通商品咨询、比价和其他采购操作不触发；用法、如何开始、版本、更新、统计和配置请求只走对应分支，不启动询价。
-version: 2.7.8
+version: 2.8.0
 ---
 
 # 烛龙智能询价
@@ -23,10 +23,10 @@ version: 2.7.8
 | 统计 | 执行 `node "<技能目录>/scripts/records.mjs" stats [天数]`（默认 30 天），原样展示输出，不另行分析或改动文件 |
 | settings / 查看、检查或解释配置 | 只读：按 [settings.md「查看和修改」](references/settings.md#查看和修改)输出真实配置的表格和路径，或检查、解释指定项；不启动询价 |
 | settings / 明确修改或 reset 配置 | 按 [settings.md「查看和修改」](references/settings.md#查看和修改)设置指定项，或用 [reset](references/settings.md#恢复默认与继承) 恢复指定项/配置组或全部个人设置，展示实际结果；键/值或 reset 范围不清时按[主代理提问与续跑](references/execution.md#主代理提问与续跑)澄清，运行中的询价先结束或停止；不启动询价 |
-| ERP 网址查看 / 明确修改 | 查看时按[手册数据目录](使用手册.md#6-数据目录)定位并只读 `<数据目录>/config.json` 的 `erpUrl`，展示已存原值并说明缺协议默认 HTTP、完整地址保留 HTTP(S)，不存在则如实说明，不初始化。明确修改时先停止运行中的询价并确认执行者已停，再执行 `records.mjs init --erp <地址>` 保存；域名/IP 可直接输入，无需协议，规范化规则见[ERP 地址](references/browseros-setup.md#erp-登录)。缺值/无效值按[主代理提问与续跑](references/execution.md#主代理提问与续跑)询问，保存后结束该配置请求。会初始化必要数据目录，不安装 helper、不控制浏览器、不询价，下次正式询价再同步新域 helper |
+| ERP 网址查看 / 明确修改 | 查看时按[手册数据目录](使用手册.md#6-数据目录)定位并只读 `<数据目录>/config.json` 的 `erpUrl`，展示已存原值并说明缺协议默认 HTTP、完整地址保留 HTTP(S)，不存在则如实说明，不初始化。明确修改时先停止运行中的询价并确认执行者已停、地址意图清楚，再执行 `records.mjs init --erp <地址>` 保存，并按[数据生命周期](references/data-lifecycle.md)报告是否重建；域名/IP 可直接输入，无需协议，规范化规则见[ERP 地址](references/browseros-setup.md#erp-登录)。缺值/无效值按[主代理提问与续跑](references/execution.md#主代理提问与续跑)询问，保存后结束该配置请求。不安装 helper、不控制浏览器、不询价，下次正式询价再同步新域 helper |
 | 执行询价 | 按下列角色阅读、提醒、准备和流程执行 |
 
-除用户明确修改 ERP 网址允许 `init --erp` 外，说明、统计和配置分支不运行 `init`、`install-helpers`，不控制 BrowserOS、不发商家消息、不调用 ERP。配置修改仅在用户明确要求时持久保存；只问参数效果或展示时不改。`version` 只读脚本所属 `SKILL.md`，不依赖业务设置、不创建数据目录；失败如实说明。
+说明、统计和仅查看配置不运行 `init`；明确配置修改或 reset 按[配置流程](references/settings.md#查看和修改)先初始化，再处理指定修改。测试阶段升级后的首次 `init` 会清空重建个人数据，边界统一见[数据生命周期](references/data-lifecycle.md)，用户更新操作见[手册](使用手册.md#7-更新)。这些分支均不运行 `install-helpers`、不控制 BrowserOS、不发商家消息、不调用 ERP。配置修改仅在用户明确要求时持久保存；只问参数效果或展示时不改。`version` 只读脚本所属 `SKILL.md`，不依赖业务设置、不创建数据目录，也不代表当前版本已初始化；失败如实说明。
 统计包含询价家数、结束原因占比、因店家提问停止的类型/占比/原话举例；维护者解释见[采购维护说明「统计店家提问」](../README.md#统计店家提问)。
 
 ## 输入、输出与支持范围
@@ -35,7 +35,7 @@ version: 2.7.8
 - 输出：仅本任务的 ERP 报价/无货（或明确未完成、需人工处理），本机运行记录、实跑报告、任务汇报与批次总汇报。
 - 仅询问有平台说明的淘宝和 1688；货源直达中的闲鱼暂不询价，没有说明的平台不凭经验询问。
 - `<技能目录>` 为本文件目录；`<数据目录>` 为 `settings.mjs json` 或 `records.mjs init` 返回的 `dataDir`，完整系统路径见[手册数据目录](使用手册.md#6-数据目录)；`<本次目录>` 为 `open-run` 返回的 runDir（兼容 new-run 的路径输出）。
-- 可调参数的发布默认值在 [settings.json](settings.json)，个人覆盖、合并规则与修改方法见 [settings.md](references/settings.md)；正式询价按[准备第 1 步](#准备)读取有效配置，并按需查相关项。本机经验仅是已验证页面事实，不能覆盖红线和业务规则。
+- 可调参数的发布默认值在 [settings.json](settings.json)，个人覆盖、合并规则与修改方法见 [settings.md](references/settings.md)；正式询价按[准备第 2 步](#准备)读取有效配置，并按需查相关项。本机经验仅是已验证页面事实，不能覆盖红线和业务规则。
 
 ## 按角色与阶段读取
 
@@ -45,7 +45,7 @@ version: 2.7.8
 |---|---|
 | 仅说明或统计 | 本文「请求分流」及所需手册章节；不读执行引用 |
 | 配置查看、修改或解释（含 ERP 地址） | 本文「请求分流」及所需的 [settings.md](references/settings.md)；需补充信息/选择时只另读 [execution.md「主代理提问与续跑」](references/execution.md#主代理提问与续跑)，不加载询价主流程 |
-| 主代理：准备、取任务、填报 | 本文；[execution.md「主代理提问与续跑」](references/execution.md#主代理提问与续跑)；[browseros-setup.md](references/browseros-setup.md)；[erp-api.md](references/erp-api.md)；[run-protocol.md](references/run-protocol.md)的本地防重复、主记录、汇报/报告；业务规则第 6、7 节用于报价整理/提醒 |
+| 主代理：准备、取任务、填报 | 本文；[数据生命周期](references/data-lifecycle.md)；[execution.md「主代理提问与续跑」](references/execution.md#主代理提问与续跑)；[browseros-setup.md](references/browseros-setup.md)；[erp-api.md](references/erp-api.md)；[run-protocol.md](references/run-protocol.md)的本地防重复、主记录、汇报/报告；业务规则第 6、7 节用于报价整理/提醒 |
 | 主代理：需要并行 | 另读 [execution.md](references/execution.md)共享协作、暂停、监控、故障/合并/收尾和当前客户端章节；不必读另一客户端映射 |
 | 平台子代理 | 本文关键红线；[browseros-setup.md「按域注册与核验 helper」](references/browseros-setup.md#按域注册与核验-helper)；[业务规则](references/inquiry-rules.md)；[记录协议](references/run-protocol.md)的主字段和平台记录；本次设置及自己的平台说明/本机经验；首次绑定或跨运行映射时按需读[身份映射](references/identity-mapping.md)；[execution.md](references/execution.md)中与自己相关的协作/暂停和客户端章节。不能触 ERP，不启动浏览器 |
 | 单代理执行 | 主代理所需内容、完整业务规则、本次启用平台的说明/经验；[execution.md](references/execution.md)的主代理提问、单代理、收尾、停止/继续及遇到的暂停/故障章节 |
@@ -57,7 +57,7 @@ version: 2.7.8
 
 ## 运行前提醒
 
-每次实际执行询价时，先完成[准备第 1 步](#准备)的配置重读与检查，通过后输出以下提醒，再继续其余准备；说明、统计和配置分支不进入本节。
+每次实际执行询价时，先完成[准备第 1、2 步](#准备)的初始化及配置重读与检查，通过后输出以下提醒，再继续其余准备；说明、统计和配置分支不进入本节。
 
 **版本**：第一行输出 `烛龙智能询价 v<版本号>`，版本号取本文件开头 `version` 的值。本机经验文件或站点脚本是为其他版本记录的，一并说明。
 
@@ -87,7 +87,15 @@ version: 2.7.8
 
 执行者控制网页前先读本机已安装的 `browseros-neo` 技能；未安装时读当前 MCP 使用说明和工具定义。精确接口以当前工具为准；连接和启动策略按 [browseros-setup.md](references/browseros-setup.md)检查运行与会话状态，确需人工时说明阻塞。以下准备由主代理或单代理负责，平台代理只注册自己平台所需域的 helper。
 
-1. 每次实际开始新询价（含同一会话后续启动）先执行以下只读命令，重新校验并读取当前技能默认值与个人覆盖合并后的 `settings`，不用旧上下文中的值或直接读取原始默认文件；失败时指出问题并阻断准备，不初始化、不安装站点脚本、不控制网页，按[配置修复提问分支](references/execution.md#何时提问答后回到哪里)取得具体修复选择后修正并重新检查：
+1. 每次实际开始新询价（含同一会话后续启动），先确认旧执行者已停，再按[数据生命周期](references/data-lifecycle.md)初始化：
+
+   ```bash
+   node "<技能目录>/scripts/records.mjs" init
+   ```
+
+   记下 `dataRebuilt`，重建结果在第 3 步运行提醒中告知。初始化失败阻断准备，不安装 helper、不控制网页，不手工清目录绕过。同版配置问题按[配置修复提问分支](references/execution.md#何时提问答后回到哪里)处理。
+
+2. 执行以下只读命令，重新校验并读取当前技能默认值与个人覆盖合并后的 `settings`，不用旧上下文中的值或直接读取原始默认文件；失败时按上述配置修复分支处理并重新检查：
 
    ```bash
    node "<技能目录>/scripts/settings.mjs" json
@@ -95,15 +103,7 @@ version: 2.7.8
 
    输出含 `dataDir`、`defaultsPath`、`userSettingsPath` 和 `settings`；不创建数据目录或个人文件。将本次 `settings` 合并值用于运行提醒及后续派发，不让子代理读原始默认文件代替。通过只表示语法、键名、类型和范围合法，子代理模型与思考深度仍需核对当前工具实际支持情况，不能悄悄换模型。
 
-2. 初始化数据目录：
-
-   ```bash
-   node "<技能目录>/scripts/records.mjs" init
-   ```
-
-   使用返回的有效入口 `erpUrl`，不重新取原始配置拼接任务页；导航后的最终 ERP 页按[登录与跳转核验](references/browseros-setup.md#erp-登录)确认；无参 `init` 不改写旧地址，缺失返回 `null`、无效则报错。按[主代理提问与续跑](references/execution.md#主代理提问与续跑)补齐/更正时，域名/IP 可直接输入，使用 `init --erp <地址>` 校验保存后继续原请求的准备。单独修改地址仍走「请求分流」的保存分支。正常准备不执行 `install-helpers`，helper 按第 4 步注册。
-
-3. **浏览器准备**：主代理按[连接与启动](references/browseros-setup.md#连接与启动)核实连接、窗口和归属，复用可用窗口；连接恢复不授权重发或重写。
+3. 输出上述运行提醒；若第 1 步返回 `dataRebuilt:true`，按[数据生命周期](references/data-lifecycle.md)告知已为当前版本初始化/重建空白个人数据目录，当前使用新版默认设置。用户已有明确个人设置要求时按配置流程保存，再重读 `settings.mjs json` 并更新提醒，不另问可选配置。使用初始化返回的有效入口 `erpUrl`，不重新取原始配置拼接任务页；同版无参 `init` 不改写旧地址，缺失返回 `null`、无效则报错。按[主代理提问与续跑](references/execution.md#主代理提问与续跑)补齐/更正时，域名/IP 可直接输入，使用 `init --erp <地址>` 校验保存后继续原请求准备。单独修改地址仍走「请求分流」的保存分支。然后主代理按[连接与启动](references/browseros-setup.md#连接与启动)核实 BrowserOS 连接、窗口和归属，复用可用窗口；连接恢复不授权重发或重写。
 4. **登录与注册**：按[ERP登录](references/browseros-setup.md#erp-登录)确认最终ERP页，再按[域注册与核验](references/browseros-setup.md#按域注册与核验-helper)准备ERP及启用平台helper，下一独立run核验并调用；ERP先ping。登录或验证按原请求人助，交回后自动核验，无需聊天“继续”。
 
 

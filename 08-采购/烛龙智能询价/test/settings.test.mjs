@@ -20,9 +20,10 @@ function fixture(t) {
     const home = join(root, 'isolated-home');
     mkdirSync(scripts, { recursive: true });
     mkdirSync(home);
-    for (const file of ['settings.mjs', 'config.mjs']) copyFileSync(join(dirname(script), file), join(scripts, file));
+    for (const file of ['settings.mjs', 'config.mjs', 'data-lifecycle.mjs']) copyFileSync(join(dirname(script), file), join(scripts, file));
     const defaultsPath = join(skill, 'settings.json');
     writeFileSync(defaultsPath, source);
+    copyFileSync(join(dirname(script), '..', 'SKILL.md'), join(skill, 'SKILL.md'));
     const dataDir = join(home, '.zhul-trade-sourcing');
     const path = join(dataDir, 'settings.json');
     const env = { ...process.env, HOME: home, USERPROFILE: home };
@@ -30,7 +31,8 @@ function fixture(t) {
     assert.equal(resolve(probe.stdout), resolve(home));
     t.after(() => rmSync(root, { recursive: true, force: true }));
     const cliAt = (entry, ...args) => spawnSync(process.execPath, [entry, ...args], { env, encoding: 'utf8', timeout: 5000 });
-    const cli = (...args) => cliAt(join(scripts, 'settings.mjs'), ...args);
+    const stamp = () => { mkdirSync(dataDir, { recursive: true }); const marker = join(dataDir, '.skill-version.json'); if (!existsSync(marker)) writeFileSync(marker, JSON.stringify({ schemaVersion: 1, skillVersion: readFileSync(join(skill, 'SKILL.md'), 'utf8').match(/^version: (.+)$/m)[1].trim() })); };
+    const cli = (...args) => { if (['set', 'reset'].includes(args[0])) stamp(); return cliAt(join(scripts, 'settings.mjs'), ...args); };
     const ok = (...args) => { const result = cli(...args); assert.equal(result.status, 0, result.stderr || result.error?.message); return result.stdout; };
     const patch = (value) => { const input = join(root, '修改配置 patch.json'); writeFileSync(input, typeof value === 'string' ? value : JSON.stringify(value)); return input; };
     const seed = (value) => { mkdirSync(dataDir, { recursive: true }); writeFileSync(path, typeof value === 'string' ? value : JSON.stringify(value)); };
@@ -38,11 +40,11 @@ function fixture(t) {
     const unchanged = (before = null) => {
         assert.equal(readFileSync(defaultsPath, 'utf8'), source);
         assert.equal(snapshot(), before);
-        assert.deepEqual(readdirSync(skill).sort(), ['scripts', 'settings.json']);
-        if (before === null) assert.deepEqual(readdirSync(home), []);
-        else assert.deepEqual(readdirSync(dataDir), ['settings.json']);
+        assert.deepEqual(readdirSync(skill).sort(), ['SKILL.md', 'scripts', 'settings.json']);
+        if (before === null) { if (existsSync(dataDir)) assert.deepEqual(readdirSync(dataDir).filter(name => name !== '.skill-version.json'), []); else assert.deepEqual(readdirSync(home), []); }
+        else assert.deepEqual(readdirSync(dataDir).filter(name => name !== '.skill-version.json'), ['settings.json']);
     };
-    return { root, skill, scripts, home, env, path, dataDir, defaultsPath, cliAt, cli, ok, patch, seed, snapshot, unchanged,
+    return { root, skill, scripts, home, env, path, dataDir, defaultsPath, stamp, cliAt, cli, ok, patch, seed, snapshot, unchanged,
         read: () => JSON.parse(readFileSync(path, 'utf8')), effective: () => JSON.parse(ok('json')).settings };
 }
 
@@ -69,7 +71,7 @@ test('set stores only explicit nested fields, false/zero/empty strings and whole
     f.ok('set', f.patch({ subagents: { claude: { model: 'runtime-id', effort: '' } } }));
     assert.deepEqual(f.read().subagents.codex, patch.subagents.codex);
     assert.deepEqual(f.read().subagents.claude, { model: 'runtime-id', effort: '' });
-    assert.deepEqual(readdirSync(f.dataDir), ['settings.json']);
+    assert.deepEqual(readdirSync(f.dataDir).filter(name => name !== '.skill-version.json'), ['settings.json']);
     assert.match(f.ok(), /&#124;/);
     assert.match(f.ok(), /&#96;/);
     assert.match(f.ok(), /subagents.codex.model \| "" \| 个人/);
@@ -91,12 +93,13 @@ test('same-default explicit choice creates a pin; repeating it preserves origina
     assert.equal(statSync(f.path).mtimeMs, before);
 });
 
-test('copied clients share user overrides; default updates flow through only for unspecified fields', (t) => {
+test('same-version copied clients share overrides; changed defaults affect only unspecified fields', (t) => {
     const f = fixture(t);
     f.ok('set', f.patch({ dedupeDays: 0, subagents: { codex: { effort: 'high' } } }));
     const otherSkill = join(f.root, 'second client');
     mkdirSync(join(otherSkill, 'scripts'), { recursive: true });
-    for (const file of ['settings.mjs', 'config.mjs']) copyFileSync(join(f.scripts, file), join(otherSkill, 'scripts', file));
+    for (const file of ['settings.mjs', 'config.mjs', 'data-lifecycle.mjs']) copyFileSync(join(f.scripts, file), join(otherSkill, 'scripts', file));
+    copyFileSync(join(f.skill, 'SKILL.md'), join(otherSkill, 'SKILL.md'));
     const updated = structuredClone(defaults);
     updated.dedupeDays = 20;
     updated.subagents.codex.model = 'new-default-model';
@@ -260,13 +263,14 @@ test('first creation holds the shared lock and a later stale first-create attemp
     assert.equal(writeSettings(f.path, null, { dedupeDays: 2 }), true);
     assert.throws(() => writeSettings(f.path, null, { dedupeDays: 1 }), /读取后已被其他操作修改/);
     assert.deepEqual(f.read(), { dedupeDays: 2 });
-    assert.deepEqual(readdirSync(f.dataDir), ['settings.json']);
+    assert.deepEqual(readdirSync(f.dataDir).filter(name => name !== '.skill-version.json'), ['settings.json']);
 });
 
 test('commands run through junctions with Chinese names and spaces using the isolated home', (t) => {
     const f = fixture(t);
     const link = join(f.root, '技能链接 with spaces');
     symlinkSync(f.skill, link, process.platform === 'win32' ? 'junction' : 'dir');
+    f.stamp();
     for (const args of [[], ['check'], ['json'], ['set', f.patch({ dedupeDays: 0 })], ['reset', 'dedupeDays']]) {
         const result = f.cliAt(join(link, 'scripts', 'settings.mjs'), ...args);
         assert.equal(result.status, 0, result.stderr);
@@ -347,7 +351,7 @@ test('reset all writes an empty object, preserves CRLF and business files, then 
     assert.equal(statSync(f.path).mtimeMs, before);
     for (const [name, text] of Object.entries(business)) assert.equal(readFileSync(join(f.dataDir, name), 'utf8'), text);
     assert.equal(readFileSync(join(f.dataDir, 'reports', 'existing.txt'), 'utf8'), 'keep');
-    assert.deepEqual(readdirSync(f.dataDir).sort(), ['config.json', 'records.jsonl', 'reports', 'settings.json']);
+    assert.deepEqual(readdirSync(f.dataDir).filter(name => name !== '.skill-version.json').sort(), ['config.json', 'records.jsonl', 'reports', 'settings.json']);
     assert.equal(readFileSync(f.defaultsPath, 'utf8'), source);
 });
 
@@ -391,7 +395,7 @@ test('reset repairs known bad personal leaves and groups only when all remaining
     assert.deepEqual(f.read(), {});
 });
 
-test('reset repairs conflicts after defaults change and restored values inherit later client defaults', (t) => {
+test('same-version reset repairs changed defaults and removed overrides inherit same-version client defaults', (t) => {
     const f = fixture(t);
     f.seed({ shopsPerLink: { max: 4 }, dedupeDays: 0, subagents: { codex: { model: 'pinned-model', effort: 'high' } } });
     const updated = structuredClone(defaults);
@@ -401,13 +405,14 @@ test('reset repairs conflicts after defaults change and restored values inherit 
     f.ok('reset', 'shopsPerLink.max', 'subagents.codex.model');
     const remaining = f.snapshot();
     assert.deepEqual(f.read(), { dedupeDays: 0, subagents: { codex: { effort: 'high' } } });
-    const otherSkill = join(f.root, 'upgraded client');
+    const otherSkill = join(f.root, 'same-version client');
     mkdirSync(join(otherSkill, 'scripts'), { recursive: true });
-    for (const file of ['settings.mjs', 'config.mjs']) copyFileSync(join(f.scripts, file), join(otherSkill, 'scripts', file));
+    for (const file of ['settings.mjs', 'config.mjs', 'data-lifecycle.mjs']) copyFileSync(join(f.scripts, file), join(otherSkill, 'scripts', file));
     updated.shopsPerLink = { min: 7, max: 8 };
     updated.subagents.codex.model = 'future-model';
     updated.subagents.codex.effort = 'low';
     updated.dedupeDays = 20;
+    copyFileSync(join(f.skill, 'SKILL.md'), join(otherSkill, 'SKILL.md'));
     writeFileSync(join(otherSkill, 'settings.json'), JSON.stringify(updated));
     const result = f.cliAt(join(otherSkill, 'scripts', 'settings.mjs'), 'json');
     assert.equal(result.status, 0, result.stderr);
@@ -445,7 +450,7 @@ test('reset requires independently valid repository defaults, preserving persona
             assert.notEqual(result.status, 0);
             assert.ok(result.stderr.includes(f.defaultsPath));
             assert.equal(f.snapshot(), before);
-            assert.deepEqual(readdirSync(f.dataDir), ['settings.json']);
+            assert.deepEqual(readdirSync(f.dataDir).filter(name => name !== '.skill-version.json'), ['settings.json']);
         }
     }
 });
@@ -462,10 +467,10 @@ test('reset CLI shares the exclusive write lock and preserves a competing writer
         assert.match(result.stderr, /其他操作正在修改/);
         assert.equal(f.snapshot(), before);
         assert.equal(readFileSync(lock, 'utf8'), 'other writer');
-        assert.deepEqual(readdirSync(f.dataDir).sort(), ['.settings.lock', 'settings.json']);
+        assert.deepEqual(readdirSync(f.dataDir).filter(name => name !== '.skill-version.json').sort(), ['.settings.lock', 'settings.json']);
     }
     rmSync(lock);
     f.ok('reset', 'dedupeDays');
     assert.deepEqual(f.read(), { confirmBeforeSend: true });
-    assert.deepEqual(readdirSync(f.dataDir), ['settings.json']);
+    assert.deepEqual(readdirSync(f.dataDir).filter(name => name !== '.skill-version.json'), ['settings.json']);
 });

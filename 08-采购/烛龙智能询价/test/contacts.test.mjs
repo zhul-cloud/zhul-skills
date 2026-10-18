@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { cpSync, copyFileSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,7 +16,12 @@ const identity = (platform = '淘宝', extra = {}) => ({ platform,
 function fixture(t) {
     const root = mkdtempSync(join(testDir, '.contacts-test-'));
     const home = join(root, 'home'); mkdirSync(home);
+    const skill = join(root, 'skill'); mkdirSync(skill);
+    cpSync(join(dirname(script), '.'), join(skill, 'scripts'), { recursive: true });
+    for (const name of ['SKILL.md', 'settings.json']) copyFileSync(join(dirname(script), '..', name), join(skill, name));
+    const copiedScript = join(skill, 'scripts', 'contacts.mjs');
     const data = join(home, '.zhul-trade-sourcing'); mkdirSync(data);
+    writeFileSync(join(data, '.skill-version.json'), JSON.stringify({ schemaVersion: 1, skillVersion: readFileSync(join(skill, 'SKILL.md'), 'utf8').match(/^version: (.+)$/m)[1].trim() }));
     const sentinels = ['config.json', 'settings.json', 'records.jsonl', 'processed-tasks.jsonl'];
     for (const name of sentinels) writeFileSync(join(data, name), `sentinel:${name}`);
     t.after(() => {
@@ -29,7 +34,7 @@ function fixture(t) {
     assert.equal(resolve(probe.stdout), resolve(home));
     const call = (command, request) => {
         const file = join(root, 'request.json'); writeFileSync(file, JSON.stringify(request));
-        const result = spawnSync(process.execPath, [script, command, '--file', file], { env, encoding: 'utf8', timeout: 5000 });
+        const result = spawnSync(process.execPath, [copiedScript, command, '--file', file], { env, encoding: 'utf8', timeout: 5000 });
         return { status: result.status, ...JSON.parse(result.stdout) };
     };
     const scope = (value) => ({ platform: value.platform, account: value.account });

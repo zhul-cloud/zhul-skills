@@ -2,6 +2,8 @@
 
 主代理或单代理读任务记录、去重、ERP 输出与报告所需章节；平台代理读「run.json」「平台记录与合并」并只写自己的平台文件。完整业务判断见 [inquiry-rules.md](inquiry-rules.md)，调度控制见 [execution.md](execution.md)。
 
+以下历史查询与原 run 恢复仅适用于仍存在的本机数据。测试阶段跨版本初始化会清除旧断点及防重复历史；按[数据生命周期](data-lifecycle.md)先完成当前版本初始化，不承诺升级后延续旧 run 或避免重复询问。CLI 写入口版本不一致时拒绝并提示先 `init`，不自行清理。
+
 ## 本地防重复
 
 对每个型号执行 `node "<技能目录>/scripts/records.mjs" recent <型号>`，查 `dedupeDays` 天内问过的店家：
@@ -159,6 +161,7 @@ UI 报错、调用中断或看不清发送结果时保持 `pending`，记录待�
 
 ```
 <数据目录>
+├── .skill-version.json     初始化成功后最后写入的版本标记，生命周期规则见 data-lifecycle.md
 ├── settings.json           个人配置覆盖，首次保存时创建
 ├── config.json             ERP 地址
 ├── contacts.json           当前平台/买家账号内的已核实接收者及多会话映射；首次remember/rebind时创建

@@ -41,6 +41,7 @@ const HELPERS_DIR = process.env.BROWSEROS_HELPERS_DIR;
 const [cmd, ...args] = process.argv.slice(2);
 let SETTINGS;
 let validateIdentity;
+let initializeData, withCurrentData;
 
 const STATUSES = ['已回复', '无货', '挂牌价', '未回复', '自动回复'];
 // 因店家提问停止聊天的结束原因，这两种要在 stopQuestion 里记下问题类型，供 stats 统计
@@ -125,17 +126,19 @@ function init(args) {
         }
         erpUrl = normalizeErpUrl(args[1]);
     }
-    const config = readConfig();
-    const effectiveUrl = erpUrl ?? (config.erpUrl == null || config.erpUrl === '' ? null : normalizeErpUrl(config.erpUrl));
-    // 地址校验完成后才允许创建目录或写配置；无参只返回有效 origin，不迁移旧配置。
-    mkdirSync(RUNS, { recursive: true });
-    mkdirSync(LEARNINGS, { recursive: true });
-    mkdirSync(REPORTS, { recursive: true });
-    if (erpUrl !== undefined) {
-        config.erpUrl = erpUrl;
-        writeFileSync(CONFIG, JSON.stringify(config, null, 2));
-    }
-    console.log(JSON.stringify({ dataDir: DATA_DIR, erpUrl: effectiveUrl }, null, 2));
+    const result = initializeData(() => {
+        const config = readConfig();
+        const effectiveUrl = erpUrl ?? (config.erpUrl == null || config.erpUrl === '' ? null : normalizeErpUrl(config.erpUrl));
+        mkdirSync(RUNS, { recursive: true });
+        mkdirSync(LEARNINGS, { recursive: true });
+        mkdirSync(REPORTS, { recursive: true });
+        if (erpUrl !== undefined) {
+            config.erpUrl = erpUrl;
+            writeFileSync(CONFIG, JSON.stringify(config, null, 2));
+        }
+        return { dataDir: DATA_DIR, erpUrl: effectiveUrl };
+    });
+    console.log(JSON.stringify(result, null, 2));
 }
 
 function installHelpers(args) {
@@ -209,7 +212,7 @@ function erpItems(runPath, args = []) {
     }
     if (!run.taskId) {
         console.error('run.json 缺少 taskId（ERP 任务 ID），请用 erpApi 的 task 结果写入');
-        process.exit(2);
+        throw Object.assign(new Error('记录校验失败'), { exitCode: 2, reported: true });
     }
     const ids = new Set(run.items.map((i) => String(i.itemId)));
     const byItem = new Map();
@@ -239,7 +242,7 @@ function erpItems(runPath, args = []) {
     }
     if (problems.length) {
         console.error('报价整理有问题：\n- ' + problems.join('\n- '));
-        process.exit(2);
+        throw Object.assign(new Error('记录校验失败'), { exitCode: 2, reported: true });
     }
     const items = [];
     const skipItemIds = [];
@@ -442,7 +445,7 @@ function loadRun(path) {
     const problems = validateRun(run);
     if (problems.length) {
         console.error('run.json 有问题：\n- ' + problems.join('\n- '));
-        process.exit(2);
+        throw Object.assign(new Error('记录校验失败'), { exitCode: 2, reported: true });
     }
     return run;
 }
@@ -498,7 +501,7 @@ function merge(runDir, args = []) {
     const files = partial ? [...new Set(selected)].map((p) => `run-${p}.json`) : readdirSync(runDir).filter((f) => /^run-.+\.json$/.test(f));
     if (!files.length) {
         console.error(`${runDir} 里没有 run-<平台>.json`);
-        process.exit(2);
+        throw Object.assign(new Error('记录校验失败'), { exitCode: 2, reported: true });
     }
     const merged = [];
     for (const f of files) {
@@ -506,12 +509,12 @@ function merge(runDir, args = []) {
         const platform = String(part.platform ?? '').trim();
         if (!platform) {
             console.error(`${f}：缺少 platform（平台）`);
-            process.exit(2);
+            throw Object.assign(new Error('记录校验失败'), { exitCode: 2, reported: true });
         }
         const problems = validatePart(run, part, f.slice(4, -5), partial);
         if (problems.length) {
             console.error(`${f} 有问题，合并没有写入 run.json：\n- ` + problems.join('\n- '));
-            process.exit(2);
+            throw Object.assign(new Error('记录校验失败'), { exitCode: 2, reported: true });
         }
         const other = (x) => x.platform !== platform;
         run.shops = [...(run.shops ?? []).filter(other), ...(part.shops ?? []).map((s) => ({ ...s, platform }))];
@@ -539,7 +542,7 @@ function merge(runDir, args = []) {
     ];
     if (problems.length) {
         console.error('合并没有写入 run.json：\n- ' + problems.join('\n- '));
-        process.exit(2);
+        throw Object.assign(new Error('记录校验失败'), { exitCode: 2, reported: true });
     }
     const temporary = join(runDir, `.run-${randomUUID()}.tmp`);
     writeFileSync(temporary, JSON.stringify(run, null, 2), { flag: 'wx' });
@@ -557,7 +560,7 @@ function check(runDir, platform, args = []) {
     const problems = validatePart(run, part, platform, args.includes('--partial'));
     if (problems.length) {
         console.error(`run-${platform}.json 有问题：\n- ` + problems.join('\n- '));
-        process.exit(2);
+        throw Object.assign(new Error('记录校验失败'), { exitCode: 2, reported: true });
     }
     console.log(`run-${platform}.json 检查通过：${part.skipped ? `本平台跳过（${part.skipped}）` : `${(part.shops ?? []).length} 家店`}`);
 }
@@ -735,10 +738,13 @@ function stats(arg) {
 
 try {
     // version 仍可只复制 records.mjs 和 SKILL.md 运行，不读取或校验配置。
+    const config = cmd === 'version' ? null : await import('./config.mjs');
     if (cmd !== 'version') {
-        SETTINGS = (await import('./config.mjs')).readSettings().settings;
+        ({ initializeData, withCurrentData } = await import('./data-lifecycle.mjs'));
         validateIdentity = (await import('./contacts.mjs')).identityProblems;
     }
+    const execute = () => {
+    if (cmd !== 'version' && cmd !== 'init') SETTINGS = config.readSettings().settings;
     if (cmd === 'version') {
         version();
     } else if (cmd === 'init') {
@@ -792,9 +798,13 @@ try {
             '  node records.mjs finish <run.json>',
             '  node records.mjs stats [天数=30]',
         ].join('\n'));
-        process.exit(1);
+        throw Object.assign(new Error('命令参数无效'), { exitCode: 1, reported: true });
     }
+    };
+    // init 自持生命周期锁；其余写入口只校验当前版，不自动清理。
+    if (['install-helpers', 'new-run', 'open-run', 'skip', 'manual', 'beat', 'merge', 'finish'].includes(cmd)) withCurrentData(execute);
+    else execute();
 } catch (e) {
-    console.error('出错：' + e.message);
-    process.exit(1);
+    if (!e.reported) console.error('出错：' + e.message);
+    process.exitCode = e.exitCode ?? 1;
 }

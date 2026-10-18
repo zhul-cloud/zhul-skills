@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { DATA_DIR, parseJson, readText } from './config.mjs';
+import { withCurrentData } from './data-lifecycle.mjs';
 
 const path = join(DATA_DIR, 'contacts.json');
 const platforms = { '淘宝': { type: 'loginNick', source: 'site-nav-login-info-nick', targetType: '3', bizType: '11001' },
@@ -83,6 +84,10 @@ function load() {
 }
 
 export function contacts(command, input) {
+    if (command === 'lookup') return operate(command, input);
+    return withCurrentData(() => operate(command, input));
+}
+function operate(command, input) {
     if (!object(input)) fail('CONTACT_INPUT', '输入必须为JSON对象');
     const currentScope = scope(input);
     if (!['lookup', 'remember', 'invalidate', 'rebind'].includes(command)) fail('CONTACT_INPUT', '只支持 lookup/remember/invalidate/rebind');

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -20,6 +20,20 @@ function fixture(t, value = run()) {
     const dir = join(root, 'run');
     mkdirSync(home);
     mkdirSync(dir);
+    const copiedSkill = join(root, 'skill-source');
+    mkdirSync(copiedSkill);
+    cpSync(join(dirname(script), '.'), join(copiedSkill, 'scripts'), { recursive: true });
+    cpSync(join(dirname(script), '..', 'helpers'), join(copiedSkill, 'helpers'), { recursive: true });
+    for (const name of ['SKILL.md', 'settings.json']) copyFileSync(join(dirname(script), '..', name), join(copiedSkill, name));
+    const copiedScript = join(copiedSkill, 'scripts', 'records.mjs');
+    const data = join(home, '.zhul-trade-sourcing');
+    // Business-unit fixtures represent an already initialized same-version directory.
+    // Lifecycle/reset behavior is exercised separately through actual init.
+    const stamp = () => {
+        mkdirSync(data, { recursive: true });
+        const marker = join(data, '.skill-version.json');
+        if (!existsSync(marker)) writeFileSync(marker, JSON.stringify({ schemaVersion: 1, skillVersion: readFileSync(join(copiedSkill, 'SKILL.md'), 'utf8').match(/^version: (.+)$/m)[1].trim() }));
+    };
     t.after(() => rmSync(root, { recursive: true, force: true }));
     const env = { ...process.env, HOME: home, USERPROFILE: home };
     // Fail before invoking records if the runtime does not honor the isolated home.
@@ -28,7 +42,10 @@ function fixture(t, value = run()) {
     assert.equal(resolve(probe.stdout), resolve(home));
     const write = (name, value) => writeFileSync(join(dir, name), typeof value === 'string' ? value : JSON.stringify(value));
     write('run.json', value);
-    const cli = (...args) => spawnSync(process.execPath, [script, ...args], { env, encoding: 'utf8', timeout: 5000 });
+    const cli = (...args) => {
+        if (['install-helpers', 'new-run', 'open-run', 'skip', 'manual', 'beat', 'merge', 'finish'].includes(args[0])) stamp();
+        return spawnSync(process.execPath, [copiedScript, ...args], { env, encoding: 'utf8', timeout: 15000 });
+    };
     const ok = (...args) => {
         const result = cli(...args);
         assert.equal(result.status, 0, result.stderr || result.error?.message);
@@ -36,12 +53,12 @@ function fixture(t, value = run()) {
     };
     const json = (...args) => JSON.parse(ok(...args));
     const lines = (name) => readFileSync(join(home, '.zhul-trade-sourcing', name), 'utf8').trim().split('\n').map(JSON.parse);
-    return { root, home, dir, path: join(dir, 'run.json'), write, cli, ok, json, lines };
+    return { root, home, dir, script: copiedScript, stamp, path: join(dir, 'run.json'), write, cli, ok, json, lines };
 }
 
 test('version reads the actual skill version and absolute directory without creating data', (t) => {
     const f = fixture(t);
-    const skillDir = resolve(script, '../..');
+    const skillDir = resolve(f.script, '../..');
     const source = readFileSync(join(skillDir, 'SKILL.md'), 'utf8');
     const result = f.json('version');
     assert.deepEqual(result, {
@@ -98,7 +115,7 @@ test('同run恢复保留identity及未知发送/追问/停止断点，不写新�
 test('ERP hosts default to HTTP while full addresses retain scheme, origin and non-default ports', (t) => {
     const f = fixture(t);
     const dataDir = join(f.home, '.zhul-trade-sourcing');
-    mkdirSync(dataDir);
+    mkdirSync(dataDir); f.stamp();
     const configPath = join(dataDir, 'config.json');
     const settingsPath = join(dataDir, 'settings.json');
     writeFileSync(configPath, JSON.stringify({ erpUrl: 'https://old.example.invalid', other: 'keep' }));
@@ -130,7 +147,7 @@ test('ERP hosts default to HTTP while full addresses retain scheme, origin and n
 test('plain init returns effective origin without changing explicit HTTPS or stored address/settings bytes', (t) => {
     const f = fixture(t);
     const dataDir = join(f.home, '.zhul-trade-sourcing');
-    mkdirSync(dataDir);
+    mkdirSync(dataDir); f.stamp();
     const configPath = join(dataDir, 'config.json');
     const settingsPath = join(dataDir, 'settings.json');
     writeFileSync(settingsPath, '{"dedupeDays":5}\n');
@@ -169,7 +186,7 @@ for (const args of [['--erp'], ['--erp', '--force'], ['--erp', ''], ['--erp', ' 
         const dataDir = join(f.home, '.zhul-trade-sourcing');
         assert.notEqual(f.cli('init', ...args).status, 0);
         assert.equal(existsSync(dataDir), false);
-        mkdirSync(dataDir);
+        mkdirSync(dataDir); f.stamp();
         const configPath = join(dataDir, 'config.json');
         const config = '{"erpUrl":"https://original.example.invalid","other":true}\n';
         writeFileSync(configPath, config);
@@ -185,7 +202,7 @@ for (const args of [['--erp'], ['--erp', '--force'], ['--erp', ''], ['--erp', ' 
 test('bad stored addresses fail before initialization, and explicit valid input can correct them', (t) => {
     const f = fixture(t);
     const dataDir = join(f.home, '.zhul-trade-sourcing');
-    mkdirSync(dataDir);
+    mkdirSync(dataDir); f.stamp();
     const configPath = join(dataDir, 'config.json');
     for (const value of [false, 0, 8000, {}, [], ' ', 'ftp://erp.invalid', 'https://user:secret@erp.invalid']) {
         const before = JSON.stringify({ erpUrl: value, other: 'keep' });
@@ -223,7 +240,7 @@ test('version follows a copied script in a path with spaces and needs no setting
 test('recent and watch read shared personal overrides without changing ERP config or creating runtime folders', (t) => {
     const f = fixture(t);
     const dataDir = join(f.home, '.zhul-trade-sourcing');
-    mkdirSync(dataDir);
+    mkdirSync(dataDir); f.stamp();
     const personalPath = join(dataDir, 'settings.json');
     writeFileSync(personalPath, JSON.stringify({ dedupeDays: 0, subagents: { stallMinutes: 10 } }));
     const erpPath = join(dataDir, 'config.json');
@@ -325,7 +342,8 @@ test('optional disk export retains source files and explicitly reports not runti
     const f = fixture(t);
     const helpersDir = join(f.root, 'isolated-helpers');
     mkdirSync(helpersDir);
-    const install = spawnSync(process.execPath, [script, 'install-helpers'], {
+    f.stamp();
+    const install = spawnSync(process.execPath, [f.script, 'install-helpers'], {
         env: { ...process.env, HOME: f.home, USERPROFILE: f.home, BROWSEROS_HELPERS_DIR: helpersDir }, encoding: 'utf8', timeout: 5000,
     });
     assert.equal(install.status, 0, install.stderr);
@@ -334,7 +352,7 @@ test('optional disk export retains source files and explicitly reports not runti
     assert.equal(result.runtimeLoaded, false);
     assert.match(result.note, /copied 不等于 runtimeLoaded/);
     assert.deepEqual(result.kept, []);
-    const skillDir = resolve(script, '../..');
+    const skillDir = resolve(f.script, '../..');
     for (const helper of result.copied) {
         const installed = readFileSync(join(helpersDir, `${helper}.md`), 'utf8');
         assert.equal(installed, readFileSync(join(skillDir, 'helpers', `${helper}.md`), 'utf8'));
@@ -348,12 +366,13 @@ test('disk export requires an explicit existing directory and never guesses a Br
     const f = fixture(t);
     const env = { ...process.env, HOME: f.home, USERPROFILE: f.home };
     delete env.BROWSEROS_HELPERS_DIR;
-    const out = spawnSync(process.execPath, [script, 'install-helpers'], { env, encoding: 'utf8', timeout: 5000 });
+    f.stamp();
+    const out = spawnSync(process.execPath, [f.script, 'install-helpers'], { env, encoding: 'utf8', timeout: 5000 });
     assert.notEqual(out.status, 0);
     assert.match(out.stderr, /维护者导出文件/);
     assert.match(out.stderr, /copied 不等于 runtimeLoaded/);
     assert.equal(out.stdout, '');
-    assert.equal(existsSync(join(f.home, '.zhul-trade-sourcing')), false);
+    assert.equal(existsSync(join(f.home, '.zhul-trade-sourcing', 'config.json')), false);
 });
 
 test('disk export preserves differing platform files and refreshes ERP without claiming runtime success', (t) => {
@@ -366,7 +385,7 @@ test('disk export preserves differing platform files and refreshes ERP without c
     writeFileSync(platformFile, 'local platform improvement');
     writeFileSync(erpFile, 'old ERP');
     f.ok('init', '--erp', 'https://erp.example.invalid');
-    const invoke = (...args) => spawnSync(process.execPath, [script, 'install-helpers', ...args], {
+    const invoke = (...args) => spawnSync(process.execPath, [f.script, 'install-helpers', ...args], {
         env: { ...process.env, HOME: f.home, USERPROFILE: f.home, BROWSEROS_HELPERS_DIR: helpersDir }, encoding: 'utf8', timeout: 5000,
     });
     const exported = invoke();
@@ -391,9 +410,9 @@ test('disk export uses the same ERP host normalization and rejects invalid store
     const helpersDir = join(f.root, 'exported-helpers');
     const dataDir = join(f.home, '.zhul-trade-sourcing');
     mkdirSync(helpersDir);
-    mkdirSync(dataDir);
+    mkdirSync(dataDir); f.stamp();
     const configPath = join(dataDir, 'config.json');
-    const invoke = () => spawnSync(process.execPath, [script, 'install-helpers'], {
+    const invoke = () => spawnSync(process.execPath, [f.script, 'install-helpers'], {
         env: { ...process.env, HOME: f.home, USERPROFILE: f.home, BROWSEROS_HELPERS_DIR: helpersDir }, encoding: 'utf8', timeout: 5000,
     });
     const invalid = '{"erpUrl":"ftp://erp.invalid","other":true}\n';
@@ -674,7 +693,7 @@ test('watch in background exits after completed platforms and waits for paused p
     const f = fixture(t);
     // Speed up only the interval; run the real CLI loop rather than the --once branch.
     const preload = 'data:text/javascript,globalThis.setInterval%3D((original)%3D%3E(fn%2Cms)%3D%3Eoriginal(fn%2C10))(globalThis.setInterval)';
-    const background = (timeout) => spawnSync(process.execPath, ['--import', preload, script, 'watch', f.dir], { encoding: 'utf8', timeout, env: { ...process.env, HOME: f.home, USERPROFILE: f.home } });
+    const background = (timeout) => spawnSync(process.execPath, ['--import', preload, f.script, 'watch', f.dir], { encoding: 'utf8', timeout, env: { ...process.env, HOME: f.home, USERPROFILE: f.home } });
     f.ok('beat', f.dir, '淘宝', '--paused', '等登录');
     f.ok('beat', f.dir, '1688', '--paused', '等确认');
     const paused = background(300);
@@ -994,7 +1013,8 @@ test('failed atomic replacement keeps the previous checkpoint intact', (t) => {
     f.write('run-1688.json', part('1688'));
     const before = readFileSync(f.path, 'utf8');
     const injection = `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module'; fs.renameSync = () => { throw new Error('test rename failure'); }; syncBuiltinESMExports();`;
-    const result = spawnSync(process.execPath, ['--import', 'data:text/javascript,' + encodeURIComponent(injection), script, 'merge', f.dir], { encoding: 'utf8', timeout: 5000, env: { ...process.env, HOME: f.home, USERPROFILE: f.home } });
+    f.stamp();
+    const result = spawnSync(process.execPath, ['--import', 'data:text/javascript,' + encodeURIComponent(injection), f.script, 'merge', f.dir], { encoding: 'utf8', timeout: 5000, env: { ...process.env, HOME: f.home, USERPROFILE: f.home } });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /test rename failure/);
     assert.equal(readFileSync(f.path, 'utf8'), before);
@@ -1082,7 +1102,7 @@ test('watch waits for the other platform after one interruption and then reports
     f.write('run-淘宝.json', part('淘宝', { status: 'interrupted', stages: {}, interruption: { reason: '等待人工恢复' } }));
     f.write('run-1688.json', part('1688', { status: 'running', stages: {} }));
     const preload = 'data:text/javascript,globalThis.setInterval%3D((original)%3D%3E(fn%2Cms)%3D%3Eoriginal(fn%2C10))(globalThis.setInterval)';
-    const background = (timeout) => spawnSync(process.execPath, ['--import', preload, script, 'watch', f.dir], { encoding: 'utf8', timeout, env: { ...process.env, HOME: f.home, USERPROFILE: f.home } });
+    const background = (timeout) => spawnSync(process.execPath, ['--import', preload, f.script, 'watch', f.dir], { encoding: 'utf8', timeout, env: { ...process.env, HOME: f.home, USERPROFILE: f.home } });
     const running = background(300);
     assert.equal(running.error?.code, 'ETIMEDOUT');
     assert.equal(running.stdout, '');

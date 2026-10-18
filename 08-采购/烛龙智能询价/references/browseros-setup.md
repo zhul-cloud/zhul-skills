@@ -17,7 +17,7 @@
 
 ERP 入口由 `records.mjs init` 返回有效 `erpUrl`，不重新读取原始配置拼接页面地址。可直接输入域名、`localhost:8000`、IPv4 或括号 IPv6（均可带端口）；未填协议默认 **`http://`**，完整 HTTP(S) 地址保留原协议。脚本取 origin，去掉路径、查询和片段，仅保留用户提供的非该协议默认端口，不猜补端口；仅首尾空白可忽略。拒绝凭据、内部空白、反斜线、无效主机/端口、非 Web 协议及歧义 IPv4 写法。
 
-显式 `init --erp <地址>` 校验并保存入口 origin；无参 `init` 返回旧地址对应的有效 origin，但不静默改写磁盘配置。缺失返回 `null`，坏地址明确报错，再按[主代理地址提问分支](execution.md#何时提问答后回到哪里)更正，不使用浏览器人助代替输入。用有效 `erpUrl` 构造 `/inquiry/my-tasks`，在本任务 owned 或用户明确分配的 ERP 标签页导航。
+显式 `init --erp <地址>` 校验并保存入口 origin；同版无参 `init` 返回已存地址对应的有效 origin，不静默改写磁盘配置。升级首次初始化的重建、结果告知及重新收集地址按[数据生命周期](data-lifecycle.md)处理。缺失返回 `null`，坏地址明确报错，再按[主代理地址提问分支](execution.md#何时提问答后回到哪里)更正，不使用浏览器人助代替输入。用有效 `erpUrl` 构造 `/inquiry/my-tasks`，在本任务 owned 或用户明确分配的 ERP 标签页导航。
 
 **入口和最终页面分开核对**：导航后读实际最终 HTTP(S) URL、页面内容及任务页归属。同域 HTTP→HTTPS 升级正常继续，不反复导航退回 HTTP 入口，不增加 HTTPS-only 探测或自动回退。在已核实的 ERP 域（含其登录页）可按下一节准备 helper、调用 `ping`；未登录则走既有人助，交回后重新核最终 ERP 页并 `ping`。若跳转到其他域，先核实是否为本 ERP 的授权页面/登录流程；停在外部 SSO 域时，须返回已确认的 ERP 页才注册/调用 ERP helper，不猜域、不将 SSO 域保存为 ERP 地址。后续 helper 注册、`ping` 及 ERP 动作均以核实后的实际 ERP 页/hostname 为准，helper 的相对 `/api` 请求仍由当前 ERP 页面发出。不自动保存最终 URL 或改写配置，不复制令牌或假定不同 origin 共享登录态。
 
@@ -59,7 +59,7 @@ node "<技能目录>/scripts/helpers.mjs" compare s.taobao.com/searchCandidates 
 
 `compare` 只读指定文件，不执行其中代码、不写浏览器或个人配置。仅归一化 CRLF/首尾空白、唯一 JS Markdown 代码块及本工具原签名 wrapper；不忽略业务内容差异。输出 `status`、`action`、`actualSha256`、`currentSha256` 和 `runtimeLoaded:false`。ERP 比对另传 `--erp`，其 `action:sync` 延续当前版本策略；电商 `unknown` 的 `action:preserve` 必须保留。维护者以后每次修改已发布 helper，须把被替换官方适配源码的 hash 按 `sourceKey` 加入 `scripts/helpers.mjs` 的 `officialHashes` 并补更新回归，不能凭注释标记认定官方来源。修改 `adaptSource` 包装也会改变所有适配源码，须在改动前保留所有受影响 `sourceKey` 的上一版完整适配源码 hash，再更新清单和对应测试。临时源码文件核对后可删除，不写进业务记录或公开仓库。
 
-更新前先停止旧询价并确认执行者已停；更新源码后新会话重读入口/引用，新 CLI 进程从安装链接实际目标读取脚本、默认配置及 helper 文件。每次询价重读有效个人覆盖，只同步启用平台会用到的域；停用域到未来启用时再同步。以上保证已知官方旧版在准备时更新并经下一次 `run` 核验，不承诺运行中的旧任务热更新，也不把未解决的本机定制或未核验域说成已同步。
+更新前先停止旧询价并确认执行者已停，需留存个人数据先按[手册更新说明](../使用手册.md#7-更新)人工收集；更新源码后新会话重读入口/引用，新 CLI 进程从安装链接实际目标读取脚本、默认配置及 helper 文件。每次询价先按[准备顺序](../SKILL.md#准备)初始化再重读有效配置，只同步启用平台会用到的域；停用域到未来启用时再同步。以上保证已知官方旧版在准备时更新并经下一次 `run` 核验，不承诺运行中的旧任务热更新，也不把未解决的本机定制或未核验域说成已同步。
 
 当前 SDK 的页面执行接口为 `page.evaluate(fn, arg?)`，参数通过 JSON 传入页面；helper 的第三参必须显式传入，不能假设页面函数能读取 `run` 的外层变量。ERP 的有界调用依赖 `run` 的标准计时器和页面的 `AbortController`；接口文档支持不等于实机已通过，注册后的调用仍按第 4 步核验。每次 `run` 只执行一个 ERP 操作，预算与超时边界见 [ERP 调用协议](erp-api.md#调用接口)。
 
