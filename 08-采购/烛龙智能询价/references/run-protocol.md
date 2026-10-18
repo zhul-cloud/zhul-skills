@@ -48,19 +48,19 @@ UI 报错、调用中断或看不清发送结果时保持 `pending`，记录待�
 
 ## run.json
 
-本次询价的全部过程记录，边做边写，放在本次目录：
+本次询价的全部过程记录，边做边写，放在本次目录；以下为虚构格式示例：
 
 ```json
 {
-  "task": "IQ20261015005A",
+  "task": "IQ20260101001A",
   "taskId": 123,
-  "readAt": "2026-10-15T08:58:00.000Z",
-  "deadline": "2026-10-16T09:00:00.000Z",
-  "quoteDeadline": "2026-10-16",
+  "readAt": "2026-01-01T08:58:00.000Z",
+  "deadline": "2026-01-02T09:00:00.000Z",
+  "quoteDeadline": "2026-01-02",
   "reviewRequired": false,
   "platforms": ["淘宝", "1688"],
   "items": [{ "itemId": 456, "model": "6ES7214-1AG40-0XB0", "quantity": 1, "unit": "台", "description": "型号说明",
-              "script": "系统话术", "links": { "淘宝": ["https://s.taobao.com/search?q=..."], "1688": ["https://s.1688.com/selloffer/offer_search.htm?keywords=..."] },
+              "script": "系统话术", "links": { "淘宝": ["https://s.taobao.com/search?q=..."], "1688": ["https://s.1688.com/selloffer/offer_search.htm?charset=utf8&keywords=..."] },
               "existingQuotes": [] }],
   "lockedItems": [],
   "shops": [
@@ -75,13 +75,13 @@ UI 报错、调用中断或看不清发送结果时保持 `pending`，记录待�
       "inquiry": { "system": "系统原话术", "sent": "实际发出的话术", "added": ["问候", "是否全新原装"] },
       "answeredTopics": ["数量"],
       "stopQuestion": null,
-      "sentAt": "2026-10-15T17:08:28+08:00",
-      "firstHumanReplyAt": "2026-10-15T17:08:56+08:00",
+      "sentAt": "2026-01-01T17:08:28+08:00",
+      "firstHumanReplyAt": "2026-01-01T17:08:56+08:00",
       "followUps": 1,
-      "followUpAt": "2026-10-15T17:11:21+08:00",
-      "replyAt": "2026-10-15T17:10:00+08:00",
+      "followUpAt": "2026-01-01T17:11:21+08:00",
+      "replyAt": "2026-01-01T17:10:00+08:00",
       "thankYou": "好的，谢谢！",
-      "endedAt": "2026-10-15T17:11:50+08:00",
+      "endedAt": "2026-01-01T17:11:50+08:00",
       "endReason": "信息齐全",
       "status": "已回复",
       "reply": "店家原话（摘要）",
@@ -93,7 +93,7 @@ UI 报错、调用中断或看不清发送结果时保持 `pending`，记录待�
   "noStock": [],
   "incompleteItems": [],
   "skippedPlatforms": [],
-  "incidents": [{ "time": "2026-10-15T17:10:18+08:00", "type": "发错对象", "detail": "给店铺B的追问发进了店铺A的会话，已发更正" }],
+  "incidents": [],
   "stages": { "start": "", "taskRead": "", "shopsPicked": "", "allSent": "", "repliesDone": "", "submitted": "" },
   "status": "running",
   "platformStates": { "淘宝": "completed", "1688": "running" },
@@ -121,7 +121,7 @@ UI 报错、调用中断或看不清发送结果时保持 `pending`，记录待�
 - `platformStates`：`{ "淘宝": "completed", "1688": "interrupted" }`，来自平台合并；`platformInterruptions` 按平台保留中断信息。`stopAfterTask` 为本轮停止批次标记，合并中断只会设 `true`，不自动清除。
 - `erpSnapshot`：首次 `task` 返回的完整快照，作为后续 `save.expectedSnapshot`；恢复必须用它对账。成功 verify 后仅按实际写入 itemIds 更新相应型号的基线，未写型号保留原值，见 [ERP 协议](erp-api.md#草稿核对提交一次与再核对)。
 - `draftReceipt`：由主代理持久化本次草稿 payload 的路径/内容和写入前 expectedSnapshot、save 实际写入 itemIds、verify 的 verifiedItemIds 及同次 GET 快照、核对状态和失败/待写回范围。它不授权平台直接写 ERP；不可把未核对成功的结果称为已保存。
-- `submissionAttempt`：提交前先保存原 payload，再写 `{ state: "pending", at: "ISO 时间" }`；结果未知改 `unknown`，核对通过改 `confirmed`，已发 PUT 后确定失败可记 `failed`；仅 helper 明确 writeAttempted:false 时可记 `{ state: "not_sent", at, writeAttempted: false }`，缺少明确 false 不成立。已发或发送状态未知的尝试阻止重新生成最终输入/重复提交，只用原 payload 做 verify。仅 helper 明确返回 writeAttempted:false 才可记 not_sent，保留原 payload 修复后重试，调用前重新写 pending；不能根据错误名推断。没有实际提交动作不能伪造 attempt。
+- `submissionAttempt`：提交前先保存原 payload，再写 `{ state: "pending", at: "ISO 时间" }`；结果未知改 `unknown`，核对通过改 `confirmed`，已发 PUT 后确定失败可记 `failed`；仅 helper 明确 writeAttempted:false 时可记 `{ state: "not_sent", at, writeAttempted: false }`，缺少明确 false 不成立。已发或发送状态未知的尝试阻止重新生成最终输入/重复提交，只用原 payload 做 verify。明确未发时保留原 payload 修复后重试，调用前重新写 pending；不能根据错误名推断未发，没有实际提交动作不能伪造 attempt。
 - `submitted`：提交回价并核对通过后为 `true`（见 [erp-api.md「草稿、核对、提交一次与再核对」](erp-api.md#草稿核对提交一次与再核对)），否则为 `false`。
 - `humanHelp` / `platformHumanHelp` / `humanHelpHistory`：按[人助记录与解除](#人助记录与解除)保存当前 ERP/平台阻塞与历史事件，不以平台 completed 或删除字段掩盖未决人助。
 
@@ -190,11 +190,11 @@ UI 报错、调用中断或看不清发送结果时保持 `pending`，记录待�
 
 ## 实跑报告
 
-每个任务结束（包括中途停下的；按 [erp-api.md「选任务与读取」](erp-api.md#选任务与读取)跳过的任务不写）都写一份，存在本机 `<数据目录>/reports/<YYYY-MM-DD>-<任务编号>.md`（例：`2026-10-15-IQ20261015005A.md`，同一天重跑同一任务时在末尾加 `-2`、`-3`）。报告只留在本机，供用户和维护者分析效率、排查问题，不上传、不发给店家或其他人。内容依据 `run.json` 和本次实际经过，按以下几节写，没有内容的节写「无」：
+每个任务结束（包括中途停下的；按 [erp-api.md「选任务与读取」](erp-api.md#选任务与读取)跳过的任务不写）都写一份，存在本机 `<数据目录>/reports/<YYYY-MM-DD>-<任务编号>.md`（同一天重跑同一任务时在末尾加 `-2`、`-3`）。报告只留在本机，供用户和维护者分析效率、排查问题，不上传、不发给店家或其他人。内容依据 `run.json` 和本次实际经过，按以下几节写，没有内容的节写「无」：
 
 1. **概况**：技能版本、日期和起止时刻、任务编号和型号、启用平台、最终结果（已提交回价 / 需人工处理及原因 / 中途停下及原因）。
 2. **结果**：每家店一行，列平台、店铺、单价、含税、货况、货期、首次人工回复用时、结束原因。
-3. **各阶段耗时**：取自 `run.json` 的 `stages`；用子代理时，挑店、发送、跟进的时间按平台取自 `platformStages`，并写上各平台两次打卡之间最长隔了几分钟（`watch --once` 输出的 `maxGapMinutes`，供调整 `stallMinutes`）。注明其中摸索、排错、等待用户处理用掉的时间。排查搜索/选店性能时，在本机证据按同一 `sampleId` 保留原链接、型号、helper 源码 hash、首访或重复、导航/候选就绪/提取完成/商品核验/选店完成的实际时刻、候选数、返回 UTF-8 字节、分段数、工具回合数及失败状态；不能补造未采到的时刻。重点比较完整墙钟耗时与工具回合，工具执行和人工等待区间分开，并行区间不简单相加；仅 helper 用时不能外推整轮询价速度。不新增运行记录 schema，原始性能证据只留本机。
+3. **各阶段耗时**：取自 `run.json` 的 `stages`；用子代理时，挑店、发送、跟进的时间按平台取自 `platformStages`，并写上各平台两次打卡之间最长隔了几分钟（`watch --once` 输出的 `maxGapMinutes`，供调整 `stallMinutes`）。注明其中摸索、排错、等待用户处理用掉的时间。排查性能时，保留可比较的同样本范围、源码版本、首访/重复及成功/失败状态，记录导航、就绪、提取、商品核验和选店的分阶段完整耗时与工具调用次数。工具执行和人工等待分计，并行区间不简单相加；缺少数据时不下提速结论，仅 helper 用时不能外推整轮询价速度。证据只留本机，不新增运行记录字段。
 4. **出现的问题**：问题、影响、当时的处理（包括 `incidents` 里的发错对象）。
 5. **红线执行情况**：逐条说明是否遵守，有例外写清经过。
 6. **建议**：对技能、ERP 的改进建议，按收益排序。

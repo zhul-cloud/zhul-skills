@@ -9,8 +9,6 @@ description: "烛龙智能询价：Saved helper for s.1688.com"
 inputs: {}
 ---
 
-烛龙智能询价：Saved helper for s.1688.com
-
 注册时按 [BrowserOS 准备协议](../../references/browseros-setup.md)使用 `scripts/helpers.mjs` 生成适配源码；运行时名带平台前缀，避免同一次 run 内跨域同名互相覆盖。Markdown 的 `name` 和下方原函数保留源码身份。
 
 Call it:
