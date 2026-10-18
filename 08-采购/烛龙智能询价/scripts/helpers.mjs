@@ -11,12 +11,15 @@ import { fileURLToPath } from 'node:url';
 
 const HELPERS = fileURLToPath(new URL('../helpers/', import.meta.url));
 // 按 sourceKey 信任完整内容，不信名称/注释/版本标记。改动已发布 helper 时追加被替换版本的适配源码 hash。
-// 2.3.2 原函数经当前确定性 wrapper 适配；亦覆盖 2.4.0 本轮修复前相同业务源码的已注册版本。
+// 包含电商及 ERP helper 被替换的已发布完整适配源码；同一业务源码覆盖其已发布版本，不收录未发布失败候选。
 export const officialHashes = {
+    '_erp/erpApi': ['e662e6634773133cd9c8cf38d4d685f9a14719b1164e593533da689ef81fd7ec'],
     'air.1688.com/imOpenAndRead': ['eb52007bea018df7c9caf4184966e7749a84cbfcd9ba5ca1d6ebe73fefd3a171',
-        '98a65c0ae0d57d2a2e5c74fd0a45e86016f9008bfb11ce8a069f04bfb1e10b51'],
+        '98a65c0ae0d57d2a2e5c74fd0a45e86016f9008bfb11ce8a069f04bfb1e10b51',
+        '09a535d8cb57b7d8993771173cdb70e41a9d3958714bc4c136b73f7eb01ba89f'],
     'air.1688.com/imPreviews': ['cbeb0071afbab2a583e6fb4142ca71a817479b14528c3e5e06463c06b4b92424'],
-    'market.m.taobao.com/imOpenAndRead': ['7340e9263083f18848cbc4fdb0b5ae14793d5ba54c410125431bd714bc5e4ca7'],
+    'market.m.taobao.com/imOpenAndRead': ['7340e9263083f18848cbc4fdb0b5ae14793d5ba54c410125431bd714bc5e4ca7',
+        '57c0d5b74e6da0ec7e5b1cc8f90d9602e0434fee1642106f25c6a967f1776897'],
     'market.m.taobao.com/imPreviews': ['63f7508c2ef0b44880f8a6c865ef40fa71fc6fccffb52fc92805a8e69441cb06'],
     's.1688.com/searchCandidates': ['caf4e50921472230841d302f543f44db1a6735da93f4cca31ee70f807ed6bf98'],
     's.taobao.com/searchCandidates': ['f7f4a7f7b772523cef0734398245fcafb014c35de02bd8b083d5f45ccc7f45a1'],
