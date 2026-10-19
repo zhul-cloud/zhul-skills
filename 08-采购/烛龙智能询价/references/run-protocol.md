@@ -88,7 +88,7 @@ node "<技能目录>/scripts/records.mjs" event "<本次目录>" "<输入JSON>"
 
 `recent` 先取各 run、平台、店铺、型号 ID 的最后纠正，再跨 run 为同平台、同店及标准化型号选择业务 `time` 最新的观察，最后检查天数窗口；业务时间相同依次取较晚 `recordedAt`、较后归档行。旧 run 迟归档不遮蔽新询价，同 run 已被纠正的旧价格也不复活；非法时间不覆盖有效观察，损坏 JSON 仍报错。
 
-沿用的店出现在某条链接的候选里时，计入这条链接的家数（见 [inquiry-rules.md「找店与挑店」](inquiry-rules.md#找店与挑店)）。单代理与子代理都把沿用的店写进 `run-<平台>.json`；并行时主代理把各平台查询结果交给对应执行者。主代理仅通过合并更新 `run.json` 的平台结果，避免直接写入后被平台覆盖。
+沿用的店计入该 ERP 明细在本平台的不同商家覆盖数（见 [inquiry-rules.md「找店与挑店」](inquiry-rules.md#找店与挑店)）。单代理与子代理都把沿用的店写进 `run-<平台>.json`；并行时主代理把各平台查询结果交给对应执行者。主代理仅通过合并更新 `run.json` 的平台结果，避免直接写入后被平台覆盖。
 
 ## 原 run 恢复与防重复
 
@@ -103,7 +103,7 @@ node "<技能目录>/scripts/records.mjs" event "<本次目录>" "<输入JSON>"
 
 ## 发送意图与确认
 
-每条对外消息发送前，平台执行者先将该店 `pendingMessage` 持久化：`{ messageId, kind, text, preparedAt, state: "pending" }`。`messageId` 是新意图生成的稳定短字符串，同一意图在核验、恢复和重试时保留；`kind` 为 `initial`、`followUp`、`reply`、`thankYou` 或 `correction`（发错更正）。用平台 checkpoint 同时保存对应 `message.intent` 后，确认准备内容和发送对象才操作 UI。发送后读回目标会话，明确出现该消息才经 checkpoint 保存 `message.confirmed`、`state:"confirmed"`、`confirmedAt` 和对应事实：首次询价 `sentAt`，追问 `followUps` / `followUpAt`，答复的 `answeredTopics` / `replyAt`，道谢的 `thankYou`。事件 messageId/messageKind 必须与快照 pendingMessage 的 messageId/kind 一致，itemIds 对应目标店的型号范围。答复不改变 `followUps` 或 `followUpAt`。多条消息逐条确认并保存，不覆盖尚未核实的意图；后续意图替换 pendingMessage 时仍保留店级 replyAt。
+每条对外消息发送前，平台执行者先将该店 `pendingMessage` 持久化：`{ messageId, kind, text, preparedAt, state: "pending" }`。`messageId` 是新意图生成的稳定短字符串，同一意图在核验、恢复和重试时保留；`kind` 为 `initial`、`followUp`、`reply`、`thankYou` 或 `correction`（发错更正）。用平台 checkpoint 同时保存对应 `message.intent` 后，确认准备内容和发送对象才操作 UI。发送后读回目标会话，明确出现该消息才经 checkpoint 保存 `message.confirmed`、`state:"confirmed"`、`confirmedAt` 和对应事实：首次询价 `sentAt`，追问 `followUps` / `followUpAt`，答复的 `answeredTopics` / `replyAt`，道谢的 `thankYou`。事件以店名、messageId、messageKind 唯一定位快照 pendingMessage，零个或多个匹配均拒绝；itemIds 对应目标店的型号范围。同名历史不同身份记录不会按第一行误配。答复不改变 `followUps` 或 `followUpAt`。多条消息逐条确认并保存，不覆盖尚未核实的意图；后续意图替换 pendingMessage 时仍保留店级 replyAt。
 
 误收店不属于正常询价店时，更正意图单独保存在本平台 `incidents[]`：`{ type:"message.correction", targetShop:"实际误收店", itemIds:[本任务型号ID], pendingMessage:{ messageId, kind:"correction", text:"不好意思发错了", preparedAt, state:"pending" } }`。事件 shop 必须为该 targetShop，messageKind 为 correction，messageId/state/型号关联与此意图一致；确认后在此保存 `state:"confirmed"` 和 confirmedAt。可用 detail 或事件 correlationId 关联同次误发及原目标。不要把误收店加入 shops，不替换原目标尚未核实的发送意图；其余消息类型仍使用正常店级 pendingMessage。更正结果未知仍保留 pending 并先核证据，不重复发送；未决更正阻止平台 completed 和正式 ERP 输入。merge 保留此平台事件，finish 不把误收店当询价店归档或加入防重复历史。
 
@@ -136,7 +136,7 @@ UI 报错、调用中断或看不清发送结果时保持 `pending`，记录待�
   "schemaVersion": 1,
   "runId": "虚构运行标识",
   "skillVersion": "2.9.0",
-  "executionVersion": "2.11.0",
+  "executionVersion": "2.12.0",
   "revision": 1,
   "eventSeq": 2,
   "createdAt": "2026-01-01T08:57:50.000Z",
@@ -244,6 +244,35 @@ UI 报错、调用中断或看不清发送结果时保持 `pending`，记录待�
 - 一个平台结果持久化后即通知主代理。主代理 `merge "<本次目录>" --partial <平台...>` 只合并指定快照，保留其他平台已有合并结果；随后 `erp-items "<本次目录>/run.json" --draft` 仅生成已有报价，不推断未完成无货。其余平台继续，所有 ERP 写入由主代理串行完成。
 - 默认 `merge "<本次目录>"` 要求全部平台完成或明确跳过；按平台覆盖，不重复追加。空 incompleteItems 清除该平台旧未完标记。合并校验失败不改 run.json；中断合并设置 stopAfterTask。
 - 正式 `erp-items` 要求全部平台完成/明确跳过、无本轮 stopAfterTask、无未知发送、无未解除平台/ERP 人助、无已发或发送状态未知的提交尝试。`incompleteItems` 单独存在不禁止提交：正常截止已完成收尾时，缺价跳 skipItemIds，有效报价照常保留。
+
+### 搜索覆盖证据
+
+平台 `searchCoverage` 随 checkpoint 保存，`check`/`merge` 同样校验；没有该字段的旧 run 保持原恢复能力，新开始挑店/补缺口时按[覆盖工具](inquiry-rules.md#覆盖规划工具)加入。每次开始/恢复先重读本次有效配置，未完成平台将其 `shopsPerItem` 更新到快照后继续补缺；checkpoint 比较当前有效配置，拒绝任意放大/缩小配额。已完成平台继续使用完成时已记录的目标，不重派、不重挑店，配置改变后仍可只读检查和合并；再次保存 completed 快照也须保留原目标。既有超过新上限的已发/待核/沿用事实照保留。
+
+```json
+{
+  "searchCoverage": {
+    "runId": "工具生成的本次runId",
+    "platform": "淘宝",
+    "shopsPerItem": { "min": 2, "max": 2 },
+    "products": [{
+      "productId": "12345",
+      "productUrl": "https://item.taobao.com/item.htm?id=12345",
+      "skuState": "当前已核SKU型号/规格状态",
+      "verifiedAt": "2026-10-19T10:00:00.000Z",
+      "eligible": true,
+      "merchant": { "idKind": "sellerId", "id": "已核具名sellerId", "name": "已核店铺全称", "sourceUrl": "https://item.taobao.com/item.htm?id=12345", "verifiedAt": "2026-10-19T10:00:00.000Z" },
+      "matches": [{ "itemId": 456, "model": "ERP原型号", "quantity": 1, "unit": "台", "description": "ERP原描述", "skuState": "当前已核SKU型号/规格状态", "exactModel": true, "suffix": true, "specifications": true, "verifiedAt": "2026-10-19T10:00:00.000Z" }]
+    }]
+  }
+}
+```
+
+- `products` 按候选处理顺序保存已实际核验的商品；每个 `productId` 仅一份当前快照。SKU或共享资料改变时替换对应条目、重核受影响 matches，不能追加旧/新状态并存来保留失效覆盖。`eligible:false` 或任一核验标记为 false 不计入新覆盖；搜索候选和 `matchItemIds` 不是核验，不写成合格证据。
+- 每个 matches 必须原样绑定本任务 `itemId`、`model`、`quantity`、`unit`、`description`（ERP缺省字段也保持缺省），三项标记和 SKU 状态逐明细核清；相同型号不同 ID/数量不共用一份核验。SKU状态须与商品当前状态一致，需求描述改变亦须重新核规格。
+- 商家 ID 当前只支持具名 `sellerId`，不能混用商品 ID、shopId、memberId 或从域名猜 ID；来源按[身份映射](identity-mapping.md)及平台具名证据核验。无可用稳定 ID 时省略 `idKind`/`id`，仅经核实全称唯一后记 `nameUnique:true`。同 ID 已核别名合并为一家；同全称出现多 ID 时禁止名称后备；受现有 ERP/历史店名键限制，本 run 同平台新选店仅保留其中一个身份，后一个候选不计覆盖并补下一店，不按明细分开绕过或改名。已固定的历史冲突保留并待核，不双计，也不允许新首发，未解决不能完成平台。
+- 规划出的店使用 `merchantKey` 关联已核身份；所有尚未发送的同商家只保留一行并合并 `itemIds`。旧已发店可从原 `identity.businessIdentity` 或已核唯一具名绑定恢复身份，不为迁就新结构重开商品详情；无法确定身份时保留原记录、标记 `identityUnresolved`、禁首发且不计覆盖，先只读核原绑定。旧店 `sentAt`/待核消息/沿用/结束事实及原 itemIds 均不删除。
+- 工具输出只是计划；不填充实际发送时间、库存或报价。新选店保存时补齐原平台记录必填字段，消息仍遵守发送意图/核对协议。`stages.shopsPicked` 后校验完整计划，防同商家拆多条首发或漏 itemId；计划/证据不替代页面对象核对。
 
 ## 数据目录
 

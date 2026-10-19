@@ -1,6 +1,6 @@
 {
   "confirmBeforeSend": false,
-  "shopsPerLink": { "min": 3, "max": 3 },
+  "shopsPerItem": { "min": 2, "max": 2 },
   "firstHumanReplyMinutes": 5,
   "followUpReplyMinutes": 3,
   "pollIntervalSeconds": { "min": 10, "max": 30 },

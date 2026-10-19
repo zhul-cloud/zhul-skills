@@ -4,7 +4,7 @@
 
 | 站点 | 脚本 | 作用 |
 |---|---|---|
-| s.taobao.com | `helpers["zhul_taobao_searchCandidates"](browser, pageId, { model, mode: "current-dom" })` | 当前 DOM 的直达商品候选；每项 `legacy` 为 `[排名, 商品ID, 标价, 付款人数, 型号匹配, 疑似非全新, 广告]`，另带独立 `title`、`productUrl` |
+| s.taobao.com | `helpers["zhul_taobao_searchCandidates"](browser, pageId, { items: [{ itemId, model }], mode: "current-dom" })` | 当前 DOM 的直达商品候选；每项 `legacy` 为 `[排名, 商品ID, 标价, 付款人数, 型号匹配, 疑似非全新, 广告]`，另带独立 `title`、`productUrl` 及逐明细 `matchItemIds` 提示 |
 | market.m.taobao.com | `helpers["zhul_taobao_imPreviews"](browser, pageId, keys)` | 按完整列表名精确且唯一匹配的会话预览，不点开；不以预览文字匹配店铺 |
 | market.m.taobao.com | `helpers["zhul_taobao_imOpenAndRead"](browser, pageId, key)` | 按完整列表名唯一打开，核对 active、标题、每条消息归属及富消息就绪后读取末尾最多 1500 字符；未就绪最多等 2200ms，缺可信绑定安全失败 |
 
@@ -16,14 +16,14 @@
 ## 2 搜索
 
 1. 在自己的标签页里用地址打开货源直达里的淘宝链接（`https://s.taobao.com/search?q=...`），不在 ERP 页面上点击。导航后核对实际搜索词、页面状态及本次结果归属；URL 已变或已有商品链接不足以证明新结果就绪。无法核实时保留未完成，不能记无货。
-2. 用表中的对象调用，`model` 传原型号；一次读取当前 DOM 的全部直达商品候选、独立标题和商品 URL，按[共同候选规则](../references/inquiry-rules.md#找店与挑店)判断覆盖和失败。`title` 来自卡片独立标题节点，不从卡片店名猜取。当前适配 `item.taobao.com/item.htm` 和 `detail.tmall.com/item.htm` 直达路径；其他路径须现场核验。`click.simba.taobao.com` 跟踪跳转不在直达商品范围，不为补候选打开推广链接。
-3. 按第 3 节从这条链接的结果里挑店，家数按 `shopsPerLink`。挑完在同一个标签页打开下一条淘宝链接，同样挑店，直到所有淘宝链接都做完；同一原型号的前面链接里已完成详情核验的商品 ID 按[共同去重规则](../references/inquiry-rules.md#找店与挑店)跳过。不同型号可复用仍有效的同一商品/店铺页面字段，仍须逐型号核对完整型号、后缀和规格，不能因商品 ID 相同略过该型号核验；选择 SKU 后的价格等状态须当前核验。所有链接均已确认覆盖且没有型号匹配的店，才按共同规则处理无货；不能把读取失败或尚未加载的候选当作无货。
+2. 用表中的批量对象调用，`items` 传本平台仍有缺口的 ERP 明细 ID 和原型号；一次获取同一 DOM 的共享候选、独立标题、商品 URL 及 `matchItemIds` 提示，按[共同候选规则](../references/inquiry-rules.md#找店与挑店)处理。标题来自卡片独立标题节点，不从店名猜取；当前适配 `item.taobao.com/item.htm`、`detail.tmall.com/item.htm` 直达路径，其他路径现场核验，不为补候选打开 `click.simba.taobao.com` 推广跳转。
+3. 按第 3 节筛选，共享当前候选与同 run 的已核商品资料，并实际调用[覆盖规划工具](../references/inquiry-rules.md#覆盖规划工具)；家数按每个 ERP 明细在本平台的 `shopsPerItem`，同商家只计一家。达到目标的明细立即停搜，剩余直达链接只为未覆盖明细补缺口。已有商品页公共字段可复用，完整型号、后缀、规格与 SKU 状态仍逐 `itemId` 核验；仅搜索提示不能计覆盖。只有缺口确实未补足才继续下一条链接，确认全部相关链接/候选覆盖后仍不足按共同规则记录实际结果；读取失败和未加载候选不能算无货。
 
 ## 3 挑店
 
 按 [inquiry-rules.md](../references/inquiry-rules.md) 第 3 节，结合页面特点：
 
-1. 先核 `型号匹配=1` 的候选；合格店不足本条家数时，`0` 按[共同后备核验规则](../references/inquiry-rules.md#找店与挑店)处理，不能直接丢弃或当无货。`1` 也仅是当前文本命中的提示，两组都须在商品页核清任务原型号、完整后缀、规格和店铺身份，既有明确错型号及第 2–4 条排除条件保持。
+1. 先核 `matchItemIds` 命中当前明细的候选；该明细仍有缺口时，未命中候选按[共同后备核验规则](../references/inquiry-rules.md#找店与挑店)处理，不能直接丢弃或当无货。`matchItemIds` 也仅是当前文本命中的提示，两组都须在商品页核清任务原型号、完整后缀、规格和店铺身份，既有明确错型号及第 2–4 条排除条件保持。
 2. 去掉广告位（`广告` 为 1）。
 3. 去掉标题写「基本全新」「二手」「拆机」「翻新」「99新」的（`疑似非全新` 为 1）。
 4. 去掉占位价：工控件常见 ¥18 至 ¥64 这类明显不可能的低价、标题以「议价」开头、0 人付款的挂牌。

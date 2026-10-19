@@ -13,15 +13,21 @@ inputs: {}
 
 Call it:
 
-`helpers["zhul_1688_searchCandidates"](browser, pageId, { model, mode: "current-dom" })`
+`helpers["zhul_1688_searchCandidates"](browser, pageId, { items: [{ itemId, model }], mode: "current-dom" })`
 
-对象调用返回当前 DOM 的全部候选及独立标题、直达商品 URL；不表示整页已经加载完毕。字符串 `model` 调用仍返回原 7 字段数组的前 20 条，仅用于旧入口兼容。筛选和覆盖边界见 [1688 平台说明](../../platforms/1688.md#2-搜索)。
+批量调用一次返回当前 DOM 候选及独立标题、直达商品 URL，`matchItemIds` 仅表示逐明细文本匹配提示；同型号不同 `itemId` 仍分别保留。结果不表示整页已加载、详情合格或已确认库存。筛选、复用及覆盖边界见 [1688平台说明](../../platforms/1688.md#2-搜索)。
 
 ```js
 async (browser, pageId, input) => {
   const detailed = typeof input === 'object' && input !== null && !Array.isArray(input);
-  const model = detailed ? input.model : input;
-  if (typeof model !== 'string' || !model.trim() || detailed && input.mode !== 'current-dom') return { ok: false, error: 'SKILL_INPUT' };
+  const batch = detailed && Object.hasOwn(input, 'items');
+  const items = batch ? input.items : null;
+  const model = batch ? items?.[0]?.model : detailed ? input.model : input;
+  if (typeof model !== 'string' || !model.trim() || detailed && input.mode !== 'current-dom'
+    || batch && (Object.hasOwn(input, 'model') || !Array.isArray(items) || !items.length
+      || items.some((item) => !item || !['string', 'number'].includes(typeof item.itemId) || !String(item.itemId).trim()
+        || typeof item.itemId === 'number' && !Number.isSafeInteger(item.itemId) || typeof item.model !== 'string' || !item.model.trim())
+      || new Set(items.map((item) => String(item.itemId))).size !== items.length)) return { ok: false, error: 'SKILL_INPUT' };
   const page = browser.page(pageId);
   const transferKey = '__zhul_search_' + Date.now() + '_' + Math.random().toString(36).slice(2);
   const unwrap = (res) => res && res.value !== undefined ? res.value : res;
@@ -29,7 +35,9 @@ async (browser, pageId, input) => {
     || result?.ok === true && result.scope === 'current-dom' && typeof result.pageUrl === 'string'
       && Array.isArray(result.candidates) && result.candidates.length > 0 && result.counts?.returned === result.candidates.length
       && result.candidates.every((c) => Array.isArray(c?.legacy) && c.legacy.length === 7
-        && (c.title === null || typeof c.title === 'string') && (c.productUrl === null || typeof c.productUrl === 'string'))
+        && (c.title === null || typeof c.title === 'string') && (c.productUrl === null || typeof c.productUrl === 'string')
+        && (!batch || Array.isArray(c.matchItemIds) && new Set(c.matchItemIds.map(String)).size === c.matchItemIds.length
+          && c.matchItemIds.every((id) => items.some((item) => item.itemId === id))))
     : Array.isArray(result) && result.every((row) => Array.isArray(row) && row.length === 7);
   const deadlineAt = Date.now() + 25000;
   const bounded = async (work, ms) => {
@@ -44,12 +52,13 @@ async (browser, pageId, input) => {
   };
   let transferred = false;
   try {
-  const raw = await bounded(() => page.evaluate(({ model, detailed, transferKey, deadlineAt }) => {
+  const raw = await bounded(() => page.evaluate(({ model, detailed, items, transferKey, deadlineAt }) => {
     // 迟到的调用不重新读取页面或创建已过期的传输槽。
     if (Date.now() >= deadlineAt) return { ok: false, error: 'SEARCH_RESULT_TIMEOUT' };
     const result = (() => {
     const norm = (x) => x.toUpperCase().replace(/O/g, '0').replace(/[^A-Z0-9]/g, '');
     const key = norm(model);
+    const hints = (value, text) => norm(text).includes(norm(value));
     const links = [...document.querySelectorAll('a[href]')].filter((a) => /detail\.1688\.com\/offer\/\d+|dj\.1688\.com/.test(a.href));
     const out = []; const candidates = []; const seen = new Set();
     for (const a of links) {
@@ -69,7 +78,8 @@ async (browser, pageId, input) => {
         const url = new URL(a.href);
         const productUrl = url.hostname === 'detail.1688.com' && url.pathname === '/offer/' + id + '.html' && id && ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password
           ? url.origin + url.pathname : null;
-        candidates.push({ legacy: out[out.length - 1], title, productUrl });
+        candidates.push({ legacy: out[out.length - 1], title, productUrl,
+          ...(items ? { matchItemIds: items.filter((item) => hints(item.model, t)).map((item) => item.itemId) } : {}) });
       }
     }
     if (!detailed) return out.slice(0, 20);
@@ -85,7 +95,7 @@ async (browser, pageId, input) => {
     globalThis[transferKey] = slot;
     slot.timer = setTimeout(() => { delete globalThis[transferKey]; }, 60000);
     return { transfer: true, length: text.length, first: text.slice(0, 600) };
-  }, { model, detailed, transferKey, deadlineAt }), deadlineAt - Date.now());
+  }, { model, detailed, items, transferKey, deadlineAt }), deadlineAt - Date.now());
   const res = unwrap(raw);
   if (Date.now() >= deadlineAt) { transferred = true; return { ok: false, error: 'SEARCH_RESULT_TIMEOUT' }; }
   if (raw?.writtenToFile || res?.writtenToFile) { transferred = true; return { ok: false, error: 'SEARCH_RESULT_TRANSPORT' }; }

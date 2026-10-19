@@ -28,8 +28,10 @@ export const officialHashes = {
         '57c0d5b74e6da0ec7e5b1cc8f90d9602e0434fee1642106f25c6a967f1776897',
         '364899e4846d3aca054d49f9dda91ce74deed8e178979aeee051b9a0c5320805'],
     'market.m.taobao.com/imPreviews': ['63f7508c2ef0b44880f8a6c865ef40fa71fc6fccffb52fc92805a8e69441cb06'],
-    's.1688.com/searchCandidates': ['caf4e50921472230841d302f543f44db1a6735da93f4cca31ee70f807ed6bf98'],
-    's.taobao.com/searchCandidates': ['f7f4a7f7b772523cef0734398245fcafb014c35de02bd8b083d5f45ccc7f45a1'],
+    's.1688.com/searchCandidates': ['ab2292014203c470bd0907dd3ad6da1c64e6f000c12b3fcfb69ec65cbb236c25',
+        'caf4e50921472230841d302f543f44db1a6735da93f4cca31ee70f807ed6bf98'],
+    's.taobao.com/searchCandidates': ['07e29d432e2ba797c987ebcddf3e3dc97fb83ad3376c16740ee070554197e6b3',
+        'f7f4a7f7b772523cef0734398245fcafb014c35de02bd8b083d5f45ccc7f45a1'],
 };
 const hash = (source) => createHash('sha256').update(source).digest('hex');
 

@@ -40,7 +40,7 @@ const HELPERS_DIR = process.env.BROWSEROS_HELPERS_DIR;
 
 const [cmd, ...args] = process.argv.slice(2);
 let SETTINGS;
-let validateIdentity;
+let validateIdentity, coverageProblems, coverageTransitionProblems;
 let initializeData, withCurrentData, withDataRead, currentVersion;
 let store;
 
@@ -518,8 +518,8 @@ function finalProblems(run) {
     return problems;
 }
 
-function validatePart(run, part, platform, partial = false) {
-    const problems = [];
+function validatePart(run, part, platform, partial = false, effectiveSettings) {
+    const problems = coverageProblems(run, part, effectiveSettings);
     if (run.platforms && !run.platforms.includes(platform)) problems.push(`平台「${platform}」不在本次 platforms 里`);
     if (String(part.platform ?? '').trim() !== platform) {
         problems.push(`platform 应为「${platform}」，现在是「${part.platform ?? ''}」`);
@@ -655,7 +655,10 @@ function checkpoint(runDir, inputPath, eventOnly = false) {
             if (problems.length) throw new Error('CHECKPOINT_INVALID: ' + problems.join('；'));
         } else {
             if (snapshot.platform !== platform) throw new Error('RUN_PLATFORM: snapshot.platform与scope不符');
-            const problems = validatePart(run, snapshot, platform, true);
+            // 已完成平台不因用户后改目标重新挑店；新/未完平台写入必须使用本次有效配额。
+            const quota = old?.searchCoverage && partState(old) === 'completed' && partState(snapshot) === 'completed'
+                ? { shopsPerItem: old.searchCoverage.shopsPerItem } : SETTINGS;
+            const problems = [...validatePart(run, snapshot, platform, true, quota), ...coverageTransitionProblems(old, snapshot)];
             if (problems.length) throw new Error('CHECKPOINT_INVALID: ' + problems.join('；'));
             const at = new Date().toISOString();
             const part = { ...snapshot, schemaVersion: 1, runId: run.runId, skillVersion: run.skillVersion, executionVersion: currentVersion(), revision: revision + 1,
@@ -670,8 +673,13 @@ function checkpoint(runDir, inputPath, eventOnly = false) {
     }
     if (!eventOnly && /^message\./.test(event.eventType)) {
         if (input.scope !== 'platform') throw new Error('EVENT_MESSAGE: 消息事实必须保存在平台checkpoint');
-        const correction = event.messageKind === 'correction' ? input.snapshot.incidents?.find(i => i.type === 'message.correction' && i.targetShop === event.shop) : null;
-        const subject = correction ?? input.snapshot.shops?.find(s => s.shop === event.shop);
+        const subjects = event.messageKind === 'correction'
+            ? (input.snapshot.incidents ?? []).filter(i => i.type === 'message.correction' && i.targetShop === event.shop
+                && i.pendingMessage?.messageId === event.messageId && i.pendingMessage?.kind === event.messageKind)
+            : (input.snapshot.shops ?? []).filter(s => s.shop === event.shop
+                && s.pendingMessage?.messageId === event.messageId && s.pendingMessage?.kind === event.messageKind);
+        if (subjects.length !== 1) throw new Error('EVENT_MESSAGE: 店名/messageId/kind 必须唯一对应当前发送意图');
+        const subject = subjects[0];
         const message = subject?.pendingMessage;
         const state = event.eventType === 'message.confirmed' ? 'confirmed' : event.eventType === 'message.cancelled' ? 'cancelled' : 'pending';
         if (message?.messageId !== event.messageId || message?.kind !== event.messageKind || message?.state !== state
@@ -889,6 +897,7 @@ try {
         ({ initializeData, withCurrentData, withDataRead, currentVersion } = await import('./data-lifecycle.mjs'));
         store = await import('./run-store.mjs');
         validateIdentity = (await import('./contacts.mjs')).identityProblems;
+        ({ coverageProblems, coverageTransitionProblems } = await import('./search-coverage.mjs'));
     }
     const execute = () => {
     if (cmd !== 'version' && cmd !== 'init') SETTINGS = config.readSettings().settings;

@@ -297,3 +297,33 @@ test('淘宝: repeated product anchors remain deduplicated, tracking links exclu
     assert.equal(result.candidates[0].legacy[3], 10000);
     assert.equal(result.candidates[1].productUrl, 'https://detail.tmall.com/item.htm?id=10002');
 });
+
+for (const platform of ['taobao', '1688']) {
+    test(`${platform}: one shared snapshot keeps distinct itemIds, duplicate models and independent matching hints`, async () => {
+        const env = environment(platform, [card(platform, '10001'), card(platform, '10002', { title: 'SERIES-B-99' })]);
+        const items = [{ itemId: 11, model: 'MODEL-A-01' }, { itemId: 12, model: 'MODEL-A-01' }, { itemId: 22, model: 'SERIES-B-99' }];
+        const result = await env.read({ items, mode: 'current-dom' });
+        assert.equal(result.ok, true);
+        assert.deepEqual(result.candidates.map(c => c.matchItemIds), [[11, 12], [22]]);
+        assert.equal(env.counts.stringify, 1, 'all models use one DOM extraction');
+        assert.equal(Object.hasOwn(result.candidates[0], 'verifiedItemIds'), false, 'hints are not verified coverage');
+    });
+    test(`${platform}: shared snapshot retains all candidates and item hints through large-result transport`, async () => {
+        const env = environment(platform, Array.from({ length: 40 }, (_, i) => card(platform, String(10000 + i))));
+        const result = await env.read({ items: [{ itemId: 1, model: 'MODEL-A-01' }, { itemId: 2, model: 'OTHER' }], mode: 'current-dom' });
+        assert.equal(result.ok, true);
+        assert.equal(result.candidates.length, 40);
+        assert.ok(result.candidates.every(c => c.matchItemIds.length === 1 && c.matchItemIds[0] === 1));
+        assert.equal(env.counts.stringify, 1);
+        assert.equal(env.timers.size, 0);
+    });
+    for (const input of [ { items: [], mode: 'current-dom' }, { items: [{ itemId: 1, model: 'A' }, { itemId: '1', model: 'B' }], mode: 'current-dom' },
+        { items: [{ model: 'A' }], mode: 'current-dom' }, { items: [{ itemId: 1, model: '' }], mode: 'current-dom' },
+        { items: [{ itemId: 1, model: 'A' }], model: 'B', mode: 'current-dom' } ]) {
+        test(`${platform}: rejects ambiguous batch input ${JSON.stringify(input)}`, async () => {
+            const env = environment(platform, [card(platform, '10001')]);
+            assert.deepEqual(await env.read(input), { ok: false, error: 'SKILL_INPUT' });
+            assert.equal(env.counts.pages, 0);
+        });
+    }
+}
