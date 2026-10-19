@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { cpSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { cpSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -693,25 +693,63 @@ test('watch keeps valid heartbeat history when the last append is incomplete', (
     assert.equal(out.stalled[0]?.platform, '1688');
 });
 
-test('watch in background exits after completed platforms and waits for paused platforms', (t) => {
+function backgroundWatch(f) {
+    // Only report waiting if the real loop kept its timer active after examining the fixtures.
+    const preload = 'data:text/javascript,' + encodeURIComponent(`
+        const active = new Set(), set = globalThis.setInterval, clear = globalThis.clearInterval;
+        globalThis.clearInterval = timer => { active.delete(timer); clear(timer); };
+        globalThis.setInterval = fn => {
+            const timer = set(() => { fn(); if (active.has(timer)) process.send('watch-waiting'); }, 10);
+            active.add(timer); return timer;
+        };
+    `);
+    const child = spawn(process.execPath, ['--import', preload, f.script, 'watch', f.dir], {
+        stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env: { ...process.env, HOME: f.home, USERPROFILE: f.home },
+    });
+    let stdout = '', stderr = '';
+    child.stdout.on('data', b => { stdout += b; });
+    child.stderr.on('data', b => { stderr += b; });
+    const waiting = () => new Promise((resolveWaiting, reject) => {
+        child.once('message', resolveWaiting);
+        child.once('error', reject);
+        child.once('close', () => reject(new Error('watch exited before waiting: ' + stderr)));
+    });
+    const timer = setTimeout(() => child.kill(), 10000);
+    const done = new Promise((resolveExit, reject) => {
+        child.once('error', reject);
+        child.once('close', (code, signal) => { clearTimeout(timer); resolveExit({ code, signal, stdout, stderr }); });
+    });
+    const write = (name, value) => {
+        const path = join(f.dir, name), temporary = path + '.next';
+        writeFileSync(temporary, JSON.stringify(value));
+        renameSync(temporary, path);
+    };
+    return { child, waiting, done, write, output: () => stdout,
+        stop: async () => { if (child.exitCode === null && child.signalCode === null) child.kill(); await done; } };
+}
+
+test('watch in background exits after completed platforms and waits for paused platforms', async (t) => {
     const f = fixture(t);
-    // Speed up only the interval; run the real CLI loop rather than the --once branch.
-    const preload = 'data:text/javascript,globalThis.setInterval%3D((original)%3D%3E(fn%2Cms)%3D%3Eoriginal(fn%2C10))(globalThis.setInterval)';
-    const background = (timeout) => spawnSync(process.execPath, ['--import', preload, f.script, 'watch', f.dir], { encoding: 'utf8', timeout, env: { ...process.env, HOME: f.home, USERPROFILE: f.home } });
     f.ok('beat', f.dir, '淘宝', '--paused', '等登录');
     f.ok('beat', f.dir, '1688', '--paused', '等确认');
-    const paused = background(300);
-    assert.equal(paused.error?.code, 'ETIMEDOUT');
-    assert.equal(paused.stdout, '');
-    f.write('run-淘宝.json', part());
-    f.write('run-1688.json', part('1688'));
-    const completed = background(3000);
-    assert.equal(completed.status, 0, completed.stderr);
+    const watcher = backgroundWatch(f);
+    let completed;
+    try {
+        assert.equal(await watcher.waiting(), 'watch-waiting');
+        assert.equal(watcher.child.exitCode, null);
+        assert.equal(watcher.output(), '');
+        watcher.write('run-淘宝.json', part());
+        watcher.write('run-1688.json', part('1688'));
+        completed = await watcher.done;
+    } finally { await watcher.stop(); }
+    assert.equal(completed.code, 0, completed.stderr);
     assert.equal(JSON.parse(completed.stdout).result, 'finished');
     f.write('run-淘宝.json', part('淘宝', { stages: {} }));
     f.write('heartbeat-淘宝.jsonl', JSON.stringify({ at: ago(5), paused: false, doing: '挑店' }) + '\n');
-    const stalled = background(3000);
-    assert.equal(stalled.status, 0, stalled.stderr);
+    const stalledWatcher = backgroundWatch(f);
+    let stalled;
+    try { stalled = await stalledWatcher.done; } finally { await stalledWatcher.stop(); }
+    assert.equal(stalled.code, 0, stalled.stderr);
     assert.equal(JSON.parse(stalled.stdout).result, 'stalled');
 });
 
@@ -1101,18 +1139,20 @@ test('partial merge preserves pending human help while allowing local draft and 
     assert.notEqual(f.cli('erp-items', join(dir, 'run.json')).status, 0);
 });
 
-test('watch waits for the other platform after one interruption and then reports interruption', (t) => {
+test('watch waits for the other platform after one interruption and then reports interruption', async (t) => {
     const f = fixture(t);
     f.write('run-淘宝.json', part('淘宝', { status: 'interrupted', stages: {}, interruption: { reason: '等待人工恢复' } }));
     f.write('run-1688.json', part('1688', { status: 'running', stages: {} }));
-    const preload = 'data:text/javascript,globalThis.setInterval%3D((original)%3D%3E(fn%2Cms)%3D%3Eoriginal(fn%2C10))(globalThis.setInterval)';
-    const background = (timeout) => spawnSync(process.execPath, ['--import', preload, f.script, 'watch', f.dir], { encoding: 'utf8', timeout, env: { ...process.env, HOME: f.home, USERPROFILE: f.home } });
-    const running = background(300);
-    assert.equal(running.error?.code, 'ETIMEDOUT');
-    assert.equal(running.stdout, '');
-    f.write('run-1688.json', part('1688', { status: 'completed' }));
-    const ended = background(3000);
-    assert.equal(ended.status, 0, ended.stderr);
+    const watcher = backgroundWatch(f);
+    let ended;
+    try {
+        assert.equal(await watcher.waiting(), 'watch-waiting');
+        assert.equal(watcher.child.exitCode, null);
+        assert.equal(watcher.output(), '');
+        watcher.write('run-1688.json', part('1688', { status: 'completed' }));
+        ended = await watcher.done;
+    } finally { await watcher.stop(); }
+    assert.equal(ended.code, 0, ended.stderr);
     assert.equal(JSON.parse(ended.stdout).result, 'interrupted');
     assert.equal(JSON.parse(ended.stdout).stopAfterTask, true);
 });
