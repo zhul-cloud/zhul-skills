@@ -34,7 +34,7 @@
 
 ### 商品详情一次读取
 
-当前任务商品页已就绪且归属明确后，在同一次 `page.evaluate` 中执行下面函数，参数 `{ itemId, model }` 均来自本任务已核候选和原型号。只读标题、独立 SKU 和店铺头部评分/发货原文，避免逐字段快照；相同标题可有重复可见节点，不能把用户评价里的标题算入。返回字段不是最终规格或商家身份结论，后续核对仍按[共同挑店规则](../references/inquiry-rules.md#找店与挑店)。
+当前任务商品页已就绪且归属明确后，在同一次 `page.evaluate` 中执行下面函数，参数 `{ itemId, model }` 均来自本任务已核候选和原型号。只读标题、独立 SKU 和店铺头部评分/发货原文，避免逐字段快照；相同标题可有重复可见节点，不能把用户评价里的标题算入。独立 SKU 可为纯型号，或「完整原型号 | 非空规格说明」两段，型号段逐字匹配，`exactSku` 保留完整原文；不从标题或模糊描述补型号，不移除后缀或连字符。返回字段不是最终规格或商家身份结论，后续核对仍按[共同挑店规则](../references/inquiry-rules.md#找店与挑店)。
 
 ```js
 ({ itemId, model }) => {
@@ -57,7 +57,11 @@
   let shopUrl;
   try { shopUrl = new URL(shop.href); } catch { return { ok: false, error: 'PRODUCT_FIELDS_UNAVAILABLE' }; }
   if (!shopName || !['http:', 'https:'].includes(shopUrl.protocol) || shopUrl.username || shopUrl.password || !/(^|\.)(taobao|tmall)\.com$/.test(shopUrl.hostname)) return { ok: false, error: 'PRODUCT_FIELDS_UNAVAILABLE' };
-  const exactSku = sku.filter((s) => s.replace(/\s/g, '') === model);
+  const exactSku = sku.filter((s) => {
+    const parts = s.split('|');
+    return parts.length === 1 ? s.replace(/\s/g, '') === model
+      : parts.length === 2 && parts[0].trim() === model && !!parts[1].trim();
+  });
   return { ok: exactSku.length > 0, ...(exactSku.length ? {} : { error: 'PRODUCT_MODEL_UNCONFIRMED' }), itemId, title: titles[0], exactSku,
     shopName, shopUrl: shopUrl.origin + shopUrl.pathname, shopHeader: shop.innerText.trim() };
 }
