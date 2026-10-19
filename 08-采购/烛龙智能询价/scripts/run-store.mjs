@@ -3,11 +3,11 @@ import { existsSync, lstatSync, realpathSync, readFileSync, writeFileSync, renam
 import { join, resolve, dirname, basename } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { DATA_DIR } from './config.mjs';
-import { currentVersion, VERSION_FILE } from './data-lifecycle.mjs';
+import { currentVersion, compatibleVersion, VERSION_FILE } from './data-lifecycle.mjs';
 
 export const RUNS = join(DATA_DIR, 'runs');
 export const PENDING = join(DATA_DIR, '.records-pending.json');
-export const META = ['schemaVersion', 'runId', 'skillVersion', 'revision', 'eventSeq', 'createdAt', 'updatedAt'];
+export const META = ['schemaVersion', 'runId', 'skillVersion', 'executionVersion', 'revision', 'eventSeq', 'createdAt', 'updatedAt'];
 export const EVENT_PHASES = {
     'task.read': 'task', 'item.selected': 'selection', 'link.processed': 'selection', 'shop.checked': 'selection', 'shop.selected': 'selection', 'shop.skipped': 'selection',
     'message.intent': 'messaging', 'message.confirmed': 'messaging', 'message.unknown': 'messaging', 'message.cancelled': 'messaging',
@@ -48,12 +48,18 @@ export function runDirectory(value) {
     safe(dir);
     return dir;
 }
+function versionFields(value) {
+    // 创建版本为 2.9/2.10 的旧格式可缺 executionVersion；较新创建版本必须提供。
+    return compatibleVersion(value.skillVersion) && (value.executionVersion === undefined
+        ? /^2\.(9|10)\./.test(value.skillVersion)
+        : compatibleVersion(value.executionVersion) && compatibleVersion(value.skillVersion, value.executionVersion));
+}
 function checkMeta(run, platform = false) {
-    if (!object(run) || run.schemaVersion !== 1 || !text(run.runId) || run.skillVersion !== currentVersion()
+    if (!object(run) || run.schemaVersion !== 1 || !text(run.runId) || !versionFields(run)
         || !Number.isSafeInteger(run.revision) || run.revision < 0 || !validTime(run.createdAt) || !validTime(run.updatedAt)
         || !platform && (!Number.isSafeInteger(run.eventSeq) || run.eventSeq < 1)) fail('RUN_VERSION', 'run 身份、版本或记录格式无效；不得把旧 run 洗成当前版本');
     const marker = JSON.parse(readFileSync(VERSION_FILE, 'utf8'));
-    if (marker.skillVersion !== run.skillVersion) fail('RUN_VERSION', '个人目录版本与 run 不符，请先初始化当前版本');
+    if (!compatibleVersion(marker.skillVersion)) fail('RUN_VERSION', '个人目录版本不兼容，请先初始化当前版本');
 }
 export function readManaged(runDir) {
     const dir = runDirectory(runDir);
@@ -67,7 +73,7 @@ export function readPart(runDir, platform, run = readManaged(runDir)) {
     const path = join(runDirectory(runDir), `run-${platform}.json`); safe(path);
     if (!existsSync(path)) return null;
     const part = JSON.parse(readFileSync(path, 'utf8')); checkMeta(part, true);
-    if (part.runId !== run.runId || part.platform !== platform) fail('RUN_ID', '平台快照不属于当前 run');
+    if (part.runId !== run.runId || part.skillVersion !== run.skillVersion || part.platform !== platform) fail('RUN_ID', '平台快照不属于当前 run');
     return part;
 }
 export function noPending() {
@@ -92,7 +98,7 @@ function atomic(path, content) {
     } finally { if (existsSync(temp)) unlinkSync(temp); }
 }
 function applyPending(tx) {
-    if (!object(tx) || tx.schemaVersion !== 1 || tx.skillVersion !== currentVersion() || !(tx.runId === null || text(tx.runId)) || !text(tx.eventId) || !Array.isArray(tx.targets) || !tx.targets.length) fail('RUN_TRANSACTION', 'pending 无法识别，保留现场');
+    if (!object(tx) || tx.schemaVersion !== 1 || !versionFields(tx) || !(tx.runId === null || text(tx.runId)) || !text(tx.eventId) || !Array.isArray(tx.targets) || !tx.targets.length) fail('RUN_TRANSACTION', 'pending 无法识别，保留现场');
     const targets = tx.targets.map(row => {
         if (!object(row) || !text(row.path) || typeof row.content !== 'string' || row.newHash !== hash(row.content)) fail('RUN_TRANSACTION', 'pending 内容损坏，保留现场');
         const path = targetPath(row.path), current = bytes(path), actual = current === null ? null : hash(current);
@@ -104,17 +110,17 @@ function applyPending(tx) {
     if (tx.runId !== null) {
         if (runTargets.length !== 1) fail('RUN_TRANSACTION', 'pending 必须恰好有一个 run 快照');
         const run = JSON.parse(runTarget.content); checkMeta(run);
-        if (run.runId !== tx.runId) fail('RUN_ID', 'pending 与 run 身份不符');
+        if (run.runId !== tx.runId || run.skillVersion !== tx.skillVersion || (run.executionVersion ?? run.skillVersion) !== (tx.executionVersion ?? tx.skillVersion)) fail('RUN_ID', 'pending 与 run 身份不符');
         for (const row of targets.filter(row => /^(run-|heartbeat-)/.test(basename(row.path)))) if (dirname(row.path) !== dirname(runTarget.path)) fail('RUN_ID', '业务投影不属于当前run目录');
         for (const row of targets.filter(row => /^run-.+\.json$/.test(basename(row.path)))) {
             const part = JSON.parse(row.content); checkMeta(part, true);
-            if (part.runId !== run.runId || basename(row.path) !== `run-${part.platform}.json` || !run.platforms.includes(part.platform)) fail('RUN_ID', 'pending 平台身份不符');
+            if (part.runId !== run.runId || part.skillVersion !== run.skillVersion || (part.executionVersion ?? part.skillVersion) !== (tx.executionVersion ?? tx.skillVersion) || basename(row.path) !== `run-${part.platform}.json` || !run.platforms.includes(part.platform)) fail('RUN_ID', 'pending 平台身份不符');
         }
     } else if (runTarget || targets.some(row => /^(run-|heartbeat-)/.test(basename(row.path)))) fail('RUN_TRANSACTION', '无run事件不得写业务快照');
     const timelines = targets.filter(row => /^timeline-/.test(basename(row.path)));
     if (timelines.length !== 1) fail('RUN_TRANSACTION', 'pending 必须恰好包含当日日志');
     const last = JSON.parse(timelines[0].content.trim().split('\n').at(-1));
-    if (last.eventId !== tx.eventId || last.runId !== tx.runId || last.skillVersion !== tx.skillVersion) fail('RUN_TRANSACTION', 'pending 事件身份不符');
+    if (last.eventId !== tx.eventId || last.runId !== tx.runId || last.skillVersion !== tx.skillVersion || (last.executionVersion ?? last.skillVersion) !== (tx.executionVersion ?? tx.skillVersion)) fail('RUN_TRANSACTION', 'pending 事件身份不符');
     for (const row of targets) if (row.actual !== row.newHash) atomic(row.path, row.content);
     unlinkSync(PENDING);
 }
@@ -184,11 +190,11 @@ export function commit(runDir, nextRun, { event, actor = 'main', eventId = rando
     const dir = runDirectory(runDir), path = join(dir, 'run.json');
     const old = create ? null : readManaged(dir), at = new Date().toISOString();
     if (!text(eventId) || eventId.length > 200) fail('EVENT_ID', 'eventId 必须为稳定短字符串');
-    const run = { ...nextRun, schemaVersion: 1, runId: old?.runId ?? nextRun.runId, skillVersion: old?.skillVersion ?? currentVersion(),
+    const run = { ...nextRun, schemaVersion: 1, runId: old?.runId ?? nextRun.runId, skillVersion: old?.skillVersion ?? currentVersion(), executionVersion: currentVersion(),
         createdAt: old?.createdAt ?? at, updatedAt: at, eventSeq: (old?.eventSeq ?? 0) + 1 };
     checkMeta(run);
     const fields = eventFields(run, actor, event, true);
-    const row = { schemaVersion: 1, runId: run.runId, skillVersion: run.skillVersion, task: run.task, taskId: run.taskId ?? null,
+    const row = { schemaVersion: 1, runId: run.runId, skillVersion: run.skillVersion, executionVersion: run.executionVersion, task: run.task, taskId: run.taskId ?? null,
         seq: run.eventSeq, eventId, occurredAt: fields.occurredAt ?? at, recordedAt: at, actor, platform: actor === 'main' ? null : actor,
         ...fields, revision: writes.find(w => /^run-.+\.json$/.test(basename(w.path)))?.revision ?? run.revision,
         requestHash: request === null ? null : hash(stable(request)) };
@@ -196,7 +202,7 @@ export function commit(runDir, nextRun, { event, actor = 'main', eventId = rando
     // ponytail: 每日日志整文件原子替换；日志达到数十 MB 后再评估分段追加。
     const outputs = [{ path, content: JSON.stringify(run, null, 2) + '\n' }, ...writes,
         { path: timeline, content: (bytes(timeline) ?? '') + JSON.stringify(row) + '\n' }];
-    const tx = { schemaVersion: 1, skillVersion: run.skillVersion, runId: run.runId, eventId, targets: outputs.map(target => {
+    const tx = { schemaVersion: 1, skillVersion: run.skillVersion, executionVersion: run.executionVersion, runId: run.runId, eventId, targets: outputs.map(target => {
         const p = targetPath(relative(target.path)), before = bytes(p);
         return { path: relative(p), beforeHash: before === null ? null : hash(before), newHash: hash(target.content), content: target.content };
     }) };
@@ -207,10 +213,10 @@ export function queueEvent(task, result, reason, historyPath, historyContent) {
     mkdirSync(RUNS, { recursive: true });
     const at = new Date().toISOString(), eventId = randomUUID(), version = currentVersion();
     const timeline = join(RUNS, `timeline-${at.slice(0, 10).replaceAll('-', '')}.log`);
-    const event = { schemaVersion: 1, skillVersion: version, runId: null, task, taskId: null, seq: null, revision: null,
+    const event = { schemaVersion: 1, skillVersion: version, executionVersion: version, runId: null, task, taskId: null, seq: null, revision: null,
         eventId, recordedAt: at, occurredAt: at, actor: 'main', platform: null, itemIds: [], models: [],
         eventType: result === 'manual' ? 'task.manual' : 'task.skipped', phase: 'task', reason, outcome: result };
-    const tx = { schemaVersion: 1, skillVersion: version, runId: null, eventId, targets: [
+    const tx = { schemaVersion: 1, skillVersion: version, executionVersion: version, runId: null, eventId, targets: [
         { path: historyPath, content: historyContent }, { path: timeline, content: (bytes(timeline) ?? '') + JSON.stringify(event) + '\n' },
     ].map(row => { const path = targetPath(relative(row.path)), before = bytes(path); return { path: relative(path), content: row.content, beforeHash: before === null ? null : hash(before), newHash: hash(row.content) }; }) };
     noPending(); atomic(PENDING, JSON.stringify(tx) + '\n'); applyPending(tx);

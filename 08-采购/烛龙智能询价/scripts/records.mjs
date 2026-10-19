@@ -41,7 +41,7 @@ const HELPERS_DIR = process.env.BROWSEROS_HELPERS_DIR;
 const [cmd, ...args] = process.argv.slice(2);
 let SETTINGS;
 let validateIdentity;
-let initializeData, withCurrentData, withDataRead;
+let initializeData, withCurrentData, withDataRead, currentVersion;
 let store;
 
 const STATUSES = ['已回复', '无货', '挂牌价', '未回复', '自动回复'];
@@ -326,7 +326,7 @@ function newRun(taskCode, json = false) {
         store.commit(dir, run, { event: { eventType: 'run.opened', phase: 'task' } });
         run = store.readManaged(dir);
     }
-    console.log(json ? JSON.stringify({ runDir: dir, runId: run.runId, skillVersion: run.skillVersion, revision: run.revision, resumed: !!prior, needsErpReconcile: true, ...progress }, null, 2) : dir);
+    console.log(json ? JSON.stringify({ runDir: dir, runId: run.runId, skillVersion: run.skillVersion, executionVersion: currentVersion(), revision: run.revision, resumed: !!prior, needsErpReconcile: true, ...progress }, null, 2) : dir);
 }
 
 function recent(model, days = SETTINGS.dedupeDays) {
@@ -394,7 +394,7 @@ function mark(result, taskCode, reason) {
     mkdirSync(DATA_DIR, { recursive: true });
     const prior = resumableRun(taskCode);
     const content = (existsSync(PROCESSED) ? readFileSync(PROCESSED, 'utf8') : '') + JSON.stringify({ time: new Date().toISOString(), task: taskCode, result, reason,
-        ...(prior?.run ? { runId: prior.run.runId, skillVersion: prior.run.skillVersion } : {}) }) + '\n';
+        ...(prior?.run ? { runId: prior.run.runId, skillVersion: prior.run.skillVersion, executionVersion: currentVersion() } : {}) }) + '\n';
     if (prior?.run) store.commit(prior.dir, prior.run, { event: { eventType: result === 'manual' ? 'task.manual' : 'task.skipped', phase: 'task', reason, outcome: result }, writes: [{ path: PROCESSED, content }] });
     else store.queueEvent(taskCode, result, reason, PROCESSED, content);
     console.log(`任务 ${taskCode} 已记为${result === 'manual' ? '需人工处理' : '跳过'}：${reason}`);
@@ -658,7 +658,7 @@ function checkpoint(runDir, inputPath, eventOnly = false) {
             const problems = validatePart(run, snapshot, platform, true);
             if (problems.length) throw new Error('CHECKPOINT_INVALID: ' + problems.join('；'));
             const at = new Date().toISOString();
-            const part = { ...snapshot, schemaVersion: 1, runId: run.runId, skillVersion: run.skillVersion, revision: revision + 1,
+            const part = { ...snapshot, schemaVersion: 1, runId: run.runId, skillVersion: run.skillVersion, executionVersion: currentVersion(), revision: revision + 1,
                 createdAt: old?.createdAt ?? at, updatedAt: at };
             writes.push({ path: platformFile(runDir, platform), content: JSON.stringify(part, null, 2) + '\n', revision: part.revision });
         }
@@ -807,7 +807,7 @@ function finish(runPath) {
             if (q.price != null && q.price !== '') quoteCount++;
             const archiveRow = lines.length;
             const row = {
-                archiveKey, archiveRow, recordedAt: now, runId: run.runId, skillVersion: run.skillVersion,
+                archiveKey, archiveRow, recordedAt: now, runId: run.runId, skillVersion: run.skillVersion, executionVersion: currentVersion(),
                 task: run.task, platform, itemId: q.itemId, reusedFrom: s.reusedFrom ?? null, model: modelOf.get(String(q.itemId)) ?? '',
                 shop: s.shop, contact: s.contact ?? '', url: s.url ?? '', status: s.status, reply: s.reply ?? '',
                 ...(s.identity != null ? { identity: s.identity } : {}),
@@ -832,7 +832,7 @@ function finish(runPath) {
     if (missing.length) writes.push({ path: RECORDS, content: (existsSync(RECORDS) ? readFileSync(RECORDS, 'utf8') : '') + missing.join('\n') + '\n' });
     writes.push({ path: PROCESSED, content: (existsSync(PROCESSED) ? readFileSync(PROCESSED, 'utf8') : '') + JSON.stringify({
         time: now, task: run.task, taskId: run.taskId ?? null,
-        runId: run.runId, skillVersion: run.skillVersion,
+        runId: run.runId, skillVersion: run.skillVersion, executionVersion: currentVersion(),
         archiveKey, snapshot, runDir: dirname(runPath), stopAfterTask: !!run.stopAfterTask,
         result: run.submitted ? 'submitted' : 'not-submitted', quotes: quoteCount, platforms: [...platforms],
     }) + '\n' });
@@ -886,7 +886,7 @@ try {
     // version 仍可只复制 records.mjs 和 SKILL.md 运行，不读取或校验配置。
     const config = cmd === 'version' ? null : await import('./config.mjs');
     if (cmd !== 'version') {
-        ({ initializeData, withCurrentData, withDataRead } = await import('./data-lifecycle.mjs'));
+        ({ initializeData, withCurrentData, withDataRead, currentVersion } = await import('./data-lifecycle.mjs'));
         store = await import('./run-store.mjs');
         validateIdentity = (await import('./contacts.mjs')).identityProblems;
     }

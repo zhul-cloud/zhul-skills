@@ -53,7 +53,7 @@ test('first initialization creates the current marker last; same version preserv
     assert.equal(existsSync(f.lock), false);
 });
 
-for (const prior of [null, '0.1.0']) test(`legacy/unmarked and older version rebuild without parsing bad old config (${prior})`, (t) => {
+for (const prior of [null, '0.1.0', '2.8.999']) test(`legacy/unmarked and older version rebuild without parsing bad old config (${prior})`, (t) => {
     const f = fixture(t); f.seed(prior);
     const result = f.ok('init');
     assert.equal(result.erpUrl, null); assert.equal(result.dataRebuilt, true);
@@ -95,7 +95,7 @@ for (const bad of ['defaults', 'missing-default', 'typed-default', 'version', 'e
     assert.deepEqual(readFileSync(f.marker), before); assert.equal(readFileSync(join(f.data, 'settings.json'), 'utf8'), 'old:settings.json');
 });
 
-test('numeric version upgrade clears personal overrides and inherits complete new defaults', (t) => {
+test('baseline version upgrade preserves personal overrides while missing keys inherit new defaults', (t) => {
     const f = fixture(t);
     const skillFile = join(f.skill, 'SKILL.md');
     writeFileSync(skillFile, readFileSync(skillFile, 'utf8').replace(/^version: .+$/m, 'version: 2.9.0'));
@@ -107,10 +107,12 @@ test('numeric version upgrade clears personal overrides and inherits complete ne
     const defaults = JSON.parse(readFileSync(defaultsFile)); defaults.dedupeDays = 20;
     writeFileSync(defaultsFile, JSON.stringify(defaults));
     writeFileSync(skillFile, readFileSync(skillFile, 'utf8').replace(/^version: .+$/m, 'version: 2.10.0'));
-    assert.equal(f.ok('init').dataRebuilt, true);
-    assert.equal(existsSync(join(f.data, 'settings.json')), false);
-    assert.equal(existsSync(join(f.data, 'sentinel')), false);
-    assert.equal(JSON.parse(f.run('settings', ['json']).stdout).settings.dedupeDays, 20);
+    assert.equal(f.ok('init').dataRebuilt, false);
+    assert.equal(JSON.parse(readFileSync(join(f.data, 'settings.json'))).dedupeDays, 1);
+    assert.equal(readFileSync(join(f.data, 'sentinel'), 'utf8'), 'old data');
+    const effective = JSON.parse(f.run('settings', ['json']).stdout).settings;
+    assert.equal(effective.dedupeDays, 1);
+    assert.equal(effective.confirmBeforeSend, defaults.confirmBeforeSend);
     writeFileSync(skillFile, readFileSync(skillFile, 'utf8').replace(/^version: .+$/m, 'version: 2.9.0'));
     assert.match(f.records('init').stderr, /DATA_NEWER_VERSION/);
     assert.equal(JSON.parse(readFileSync(f.marker)).skillVersion, '2.10.0');
@@ -200,4 +202,33 @@ for (const target of ['root', 'child', 'parent']) test(`links never lead recursi
     const result = f.records('init'); assert.notEqual(result.status, 0); assert.match(result.stderr, /DATA_PATH_UNSAFE/);
     assert.equal(readFileSync(join(outside, 'sentinel'), 'utf8'), 'keep');
     if (target === 'child') assert.equal(readFileSync(join(f.data, 'settings.json'), 'utf8'), 'old:settings.json');
+});
+
+for (const prior of ['2.9.0', '2.9.999', '2.10.1']) test(`compatible upgrade preserves all personal areas byte-for-byte (${prior})`, t => {
+    const f = fixture(t); f.seed(prior);
+    writeFileSync(join(f.data, 'config.json'), '{"erpUrl":"https://erp.example.invalid"}');
+    writeFileSync(join(f.data, 'settings.json'), '{"shopsPerLink":{"min":2,"max":2}}');
+    const names = ['settings.json', 'config.json', 'records.jsonl', 'processed-tasks.jsonl', 'contacts.json', 'runs/run.json', 'learnings/platform.md', 'reports/report.md'];
+    const before = names.map(name => readFileSync(join(f.data, name)));
+    const result = f.ok('init'); assert.equal(result.dataRebuilt, false); assert.equal(result.erpUrl, 'https://erp.example.invalid');
+    names.forEach((name, i) => assert.deepEqual(readFileSync(join(f.data, name)), before[i]));
+    assert.equal(JSON.parse(readFileSync(f.marker)).skillVersion, f.version);
+    assert.deepEqual(JSON.parse(f.run('settings', ['json']).stdout).settings.shopsPerLink, { min: 2, max: 2 });
+});
+
+for (const lockName of ['.settings.lock', '.contacts.lock']) test(`compatible upgrade keeps marker and existing business lock (${lockName})`, t => {
+    const f = fixture(t); f.seed('2.9.0'); writeFileSync(join(f.data, lockName), 'owner');
+    assert.match(f.records('init').stderr, /DATA_BUSY/);
+    assert.equal(JSON.parse(readFileSync(f.marker)).skillVersion, '2.9.0');
+    assert.equal(readFileSync(join(f.data, lockName), 'utf8'), 'owner');
+});
+
+test('compatible upgrade does not discard bad configuration or advance its marker on failure', t => {
+    const f = fixture(t); f.seed('2.9.0'); const before = readFileSync(f.marker);
+    assert.notEqual(f.records('init').status, 0);
+    assert.deepEqual(readFileSync(f.marker), before); assert.equal(readFileSync(join(f.data, 'config.json'), 'utf8'), 'old:config.json');
+    writeFileSync(join(f.data, 'config.json'), '{}');
+    assert.equal(f.ok('init').dataRebuilt, false);
+    assert.notEqual(f.run('settings', ['json']).status, 0);
+    assert.equal(readFileSync(join(f.data, 'settings.json'), 'utf8'), 'old:settings.json');
 });

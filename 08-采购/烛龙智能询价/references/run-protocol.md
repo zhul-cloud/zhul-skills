@@ -2,7 +2,7 @@
 
 所有执行者先读「受控保存与事件」「每日时间线与关键事件」。主代理或单代理再读任务记录、去重、ERP 输出与报告所需章节；平台代理再读「run.json」「平台记录与合并」并只保存自己的平台 scope。完整业务判断见 [inquiry-rules.md](inquiry-rules.md)，调度控制见 [execution.md](execution.md)。
 
-以下历史查询与原 run 恢复仅适用于仍存在的本机数据。测试阶段跨版本初始化会清除旧断点及防重复历史；按[数据生命周期](data-lifecycle.md)先完成当前版本初始化，不承诺升级后延续旧 run 或避免重复询问。CLI 写入口版本不一致时拒绝并提示先 `init`，不自行清理。
+以下历史查询与原 run 恢复仅适用于仍存在的本机数据。升级按[数据生命周期](data-lifecycle.md)保留个人数据并处理旧格式，先完成当前版本初始化；保留的 run 仍须核对真实业务状态。CLI 写入口版本不一致时拒绝并提示先 `init`，不自行清理。
 
 ## 受控保存与事件
 
@@ -35,7 +35,7 @@ node "<技能目录>/scripts/records.mjs" event "<本次目录>" "<输入JSON>"
 
 - `runId` 取 `open-run` 返回值或权威主记录；`actor` 为实际记录者的逻辑角色：主代理 `main` 或本平台名。主记录用 `scope:"run"`；平台用 `scope:"platform"` 并带 `platform`。平台代理只能保存与自己同名的平台；单代理仍以 `main` 为 actor 分别保存主/平台快照。平台 scope 自动固定并核对 `event.platform`；独立 `event` 中，main 记录平台事实须显式带 `event.platform`，平台代理缺省取自身平台，不能冒用别平台。事件不替代角色授权。
 - `expectedRevision` 取刚读取的目标 scope 的 `revision`。主/平台分别计数，两个平台保存各自快照不共用 revision。冲突先重读最新文件、保留并合并新事实，再重新保存；不旧副本覆盖、不把失败当已保存。主记录的任务身份、已绑定型号 ID/型号及平台范围不可另换；主 scope 不能修改平台归并字段（shops、noStock、incompleteItems、skippedPlatforms、platformStages、platformStates、platformHumanHelp、platformInterruptions），这些字段保持最新主记录原值，通过平台快照及 `merge` 更新。`incidents` 中带 platform 的条目同样原样保留；main 可更新无 platform 的自身事件，例如 ERP 滑块意图/结果。恢复不重新导入 ERP 整包覆盖已有进度。
-- `snapshot` 建议只包含业务字段。工具继承 `schemaVersion`、`runId`、`skillVersion`、`createdAt`，更新 `revision`、`updatedAt` 及主记录的 `eventSeq`；若输入包含这些元数据，必须与当前值完全一致，不能自行递增或伪造。
+- `snapshot` 建议只包含业务字段。工具继承 `schemaVersion`、`runId`、`skillVersion`、`createdAt`，更新 `executionVersion`、`revision`、`updatedAt` 及主记录的 `eventSeq`；若输入包含这些元数据，必须与当前值完全一致，不能自行递增或伪造。
 - `eventId` 在同一语义动作首次准备时生成，重试保留；命令响应丢失后，用完全相同的输入重试。工具返回 `{ runId, revision, seq, eventId, replayed }`，已成功的相同请求返回 `replayed:true`；新的事实使用新 eventId，不能改内容后冒用原 ID。
 - `event` 命令输入仅带 `runId`、`eventId`、`actor`、`event`，不带快照或预期 revision；用于已有断点之外的真实事件。发送意图、确认、人助及 ERP 回执等需要更新断点时，用一次 `checkpoint` 同时保存事件和快照，不能只留事件而让恢复字段缺失。
 
@@ -43,11 +43,13 @@ node "<技能目录>/scripts/records.mjs" event "<本次目录>" "<输入JSON>"
 
 多文件只读也复用生命周期短锁：`next` 在同一次短锁内读取任务历史和断点，`watch` 每轮读取时持锁、读完即释放，等待期间不占锁，stopAfterTask 取当轮主记录。只读锁不执行 `init`、不重建目录，也不因只查看而要求先初始化；读取已有 run 仍核验其身份和版本，pending/锁占用按实际错误停止读取。常驻 watch 读取报错会结束监控并非零退出，不输出伪 finished。单文件统计沿用原子文件读取，不作跨文件一致性承诺。
 
+运行的 `skillVersion` 固定为创建版本；`executionVersion` 记录最近一次受控保存的执行版本。平台快照绑定同一 runId 和创建版本，各自保留最后保存的执行版本。事件及 pending 同样记录创建版本与实际执行版本，归档行和恢复输出也明确区分；无 run 的事件两者均取执行版本。创建于 `2.9`/`2.10` 且缺少 `executionVersion` 的原记录按其 `skillVersion` 理解，新写入会补执行版本，历史行不改写。兼容旧 run 可以续跑，低于基线、较新版本及损坏身份拒绝；目录升级和旧 pending 处理见[数据生命周期](data-lifecycle.md)。
+
 ## 每日时间线与关键事件
 
 文件为 `<数据目录>/runs/timeline-YYYYMMDD.log`，扩展名是 `.log`，内容为 UTF-8 JSONL，每行一个事件。按实际落盘日期（UTC）分文件；跨日恢复仍用同一 runId，事件按本 run 的 `seq` 关联，不从文件名推断业务发生日期。
 
-每行含 `schemaVersion`、`runId`、`skillVersion`、`task`、`taskId`、`seq`、`eventId`、`recordedAt`、`occurredAt`、`actor`、`platform`、`eventType`、`phase`、`itemIds`、`models`、`revision` 和幂等核对用的 `requestHash`，其余字段按事件需要提供。版本、任务及型号名称由权威断点补齐，不手工传一套独立型号文字；`itemIds` 必须属于当前任务且不重复。没有 run 的 skip/manual 事件不虚构运行身份、序号或型号。`recordedAt` 是落盘时刻；知道真实发生时刻才传 `occurredAt`，缺省为落盘时刻，不把缺省值当准确的业务起止。
+每行含 `schemaVersion`、`runId`、`skillVersion`、`executionVersion`、`task`、`taskId`、`seq`、`eventId`、`recordedAt`、`occurredAt`、`actor`、`platform`、`eventType`、`phase`、`itemIds`、`models`、`revision` 和幂等核对用的 `requestHash`，其余字段按事件需要提供。版本、任务及型号名称由权威断点补齐，不手工传一套独立型号文字；`itemIds` 必须属于当前任务且不重复。没有 run 的 skip/manual 事件不虚构运行身份、序号或型号。`recordedAt` 是落盘时刻；知道真实发生时刻才传 `occurredAt`，缺省为落盘时刻，不把缺省值当准确的业务起止。
 
 `event` 只接受下表组合，不自行发明 eventType 或 phase。发生状态变化时优先随 `checkpoint` 一起记录；仅增加观察或信号事实时使用 `event`。
 
@@ -90,7 +92,7 @@ node "<技能目录>/scripts/records.mjs" event "<本次目录>" "<输入JSON>"
 
 ## 原 run 恢复与防重复
 
-选定 IQ 后先执行 `node "<技能目录>/scripts/records.mjs" open-run <任务编号>`，返回 `{ runDir, runId, skillVersion, revision, resumed, needsErpReconcile, completedPlatforms, stopAfterTask }`；`new-run <任务编号>` 使用同一恢复逻辑但仅输出路径。唯一未提交的真实 run 优先复用；多份未完、坏记录或已提交冲突须停止核对，不随意挑最近一份、不覆盖旧目录。模拟记录不参与真实恢复。`next` 仍按传入的 ERP 待处理列表顺序，需恢复时返回 `resumeRun`；manual 记录不掩盖真实未完 run，但明确 skipped 优先于 manual，不因旧断点重新选中已跳过任务；submitted 始终优先，不被后续 manual/skipped 撤销。
+选定 IQ 后先执行 `node "<技能目录>/scripts/records.mjs" open-run <任务编号>`，返回 `{ runDir, runId, skillVersion, executionVersion, revision, resumed, needsErpReconcile, completedPlatforms, stopAfterTask }`；`new-run <任务编号>` 使用同一恢复逻辑但仅输出路径。唯一未提交的真实 run 优先复用；多份未完、坏记录或已提交冲突须停止核对，不随意挑最近一份、不覆盖旧目录。模拟记录不参与真实恢复。`next` 仍按传入的 ERP 待处理列表顺序，需恢复时返回 `resumeRun`；manual 记录不掩盖真实未完 run，但明确 skipped 优先于 manual，不因旧断点重新选中已跳过任务；submitted 始终优先，不被后续 manual/skipped 撤销。
 
 新 run 创建时立即保存工具生成的元数据和 `{ task, status: "running", items: [], platforms: [], submitted: false }` 空骨架，并记录 `run.created`；打开原 run 记录 `run.opened`，只表示取得目录，不表示恢复核验已完成。仅未初始化且没有平台/消息事实的空骨架，恢复时允许首次补入 ERP task，不拿空 snapshot 对账；已有实际断点则不得覆盖。主代理首次读取 ERP 后通过 `checkpoint` 补齐任务信息和 `erpSnapshot`（见 [ERP 协议](erp-api.md#选任务与读取)）。恢复时读原 `run.json`、各平台文件、未决发送/人助、草稿回执和提交尝试；ERP 新读取不得覆盖原 `deadline`、会话进度或旧基线。先与旧基线核对现 ERP，冲突时不写；检查上轮执行者已停止并完成核验后，才记录实际恢复并明确恢复本轮。
 
@@ -134,6 +136,7 @@ UI 报错、调用中断或看不清发送结果时保持 `pending`，记录待�
   "schemaVersion": 1,
   "runId": "虚构运行标识",
   "skillVersion": "2.9.0",
+  "executionVersion": "2.11.0",
   "revision": 1,
   "eventSeq": 2,
   "createdAt": "2026-01-01T08:57:50.000Z",
@@ -188,7 +191,7 @@ UI 报错、调用中断或看不清发送结果时保持 `pending`，记录待�
 }
 ```
 
-- `schemaVersion`：记录结构版本，与技能语义版本分开。`runId` 唯一标识本次 run；`skillVersion` 固定为创建 run 的技能版本。同版恢复保留运行身份和版本，不把恢复时刻当新建，不在跨版清理后续接旧 run。
+- `schemaVersion`：记录结构版本，与技能语义版本分开。`runId` 唯一标识本次 run；`skillVersion` 固定为创建 run 的技能版本。恢复保留运行身份和创建版本，不把恢复时刻当新建；`executionVersion` 区分实际执行版本。仅旧格式清理后的数据不能续接。
 - `revision`：主 scope 的快照修订号；`eventSeq`：本 run 时间线的事件序号。平台 scope 使用独立 revision，不自带 eventSeq。`createdAt`、`updatedAt` 为工具保存元数据，不替代业务阶段、实际消息时间或事件发生时间。
 - `task` 到 `lockedItems`：取自 `erpApi` 的 `task` 结果（见 [erp-api.md「选任务与读取」](erp-api.md#选任务与读取)）。`deadline` 是报价截止时刻；`reviewRequired` 为 `true` 时提交后要审核；`items[].itemId` 是 ERP 型号 ID，所有报价的 `itemId` 都用它。主记录已绑定的任务及型号身份不得在后续快照中替换。
 - `shops[].identity`：可选的[当前账号身份映射](identity-mapping.md)验证结果，未核实为 null 或缺省。来自当次 helper 的平台、具名账号、接收者、self 买家证据及 conversationId，独立商家页证据可选。`check` 验证结构、平台及已有 contact 一致；`merge`、恢复及 `finish` 归档保留。当前版本记录可缺省 identity；缺少此字段本身不使记录失效。它不改变原型号/店名防重复键，也不替代 pendingMessage、结束状态和计时事实。
@@ -218,7 +221,7 @@ UI 报错、调用中断或看不清发送结果时保持 `pending`，记录待�
 
 `shops[].quotes` 的 `taxIncluded`、`freeShipping` 若提供必须为布尔值，不能写 `null` 或字符串 `"false"` 等非布尔值。省略时分别按 `false`、`true` 处理；`check`、`merge`、`erp-items` 和 `finish` 校验一致，拒绝时不改记录或归档。主记录的 `noStock` 仍为列表，不改为布尔值。
 
-所有执行方式统一由本平台执行者通过平台 scope 的 `checkpoint` 保存 `run-<平台>.json`，主代理串行合并。平台元数据由工具生成并继承，含 `schemaVersion`、`runId`、`skillVersion`、独立的 `revision`、`createdAt`、`updatedAt`，不带 `eventSeq`。首次平台保存使用 `expectedRevision:0`；此后重读实际 revision。下面仅示意业务字段，`shops` 的 `"..."` 是省略示意：
+所有执行方式统一由本平台执行者通过平台 scope 的 `checkpoint` 保存 `run-<平台>.json`，主代理串行合并。平台元数据由工具生成并继承，含 `schemaVersion`、`runId`、`skillVersion`、`executionVersion`、独立的 `revision`、`createdAt`、`updatedAt`，不带 `eventSeq`。首次平台保存使用 `expectedRevision:0`；此后重读实际 revision。下面仅示意业务字段，`shops` 的 `"..."` 是省略示意：
 
 ```json
 {

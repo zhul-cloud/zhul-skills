@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { cpSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve, basename, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 const source = fileURLToPath(new URL('../', import.meta.url));
 const testDir = dirname(fileURLToPath(import.meta.url));
 const now = () => new Date().toISOString();
-const facts = value => Object.fromEntries(Object.entries(value).filter(([key]) => !['schemaVersion', 'runId', 'skillVersion', 'revision', 'eventSeq', 'createdAt', 'updatedAt'].includes(key)));
+const facts = value => Object.fromEntries(Object.entries(value).filter(([key]) => !['schemaVersion', 'runId', 'skillVersion', 'executionVersion', 'revision', 'eventSeq', 'createdAt', 'updatedAt'].includes(key)));
 function fixture(t) {
     const root = mkdtempSync(join(testDir, '.run-store-test-')), home = join(root, 'home'), skill = join(root, 'skill');
     mkdirSync(home); mkdirSync(skill);
@@ -185,16 +186,78 @@ test('finish business hash ignores metadata events and pending repairs all archi
     assert.equal(f.read(dir).runId, run.runId);
 });
 
-test('upgrade rebuilds run/timeline/pending, stale copied writer and stale same-version runId reject', t => {
+test('upgrade preserves run identity/history, records current execution and rejects stale copies', t => {
     const f = fixture(t), dir = f.bind(), prior = f.read(dir), oldSkill = join(f.root, 'old-skill'); cpSync(f.skill, oldSkill, { recursive: true });
-    const path = f.input(f.request(dir, { eventType: 'run.resumed', phase: 'recovery' }));
-    const skillFile = join(f.skill, 'SKILL.md'); writeFileSync(skillFile, readFileSync(skillFile, 'utf8').replace(/^version: .+$/m, 'version: 999.0.0'));
-    assert.equal(f.json('init').dataRebuilt, true); assert.equal(existsSync(dir), false); assert.equal(f.timeline().length, 0);
-    const next = f.open('IQ-OBS'); assert.notEqual(next.runId, prior.runId); assert.equal(next.skillVersion, '999.0.0');
+    const request = f.request(dir, { eventType: 'run.resumed', phase: 'recovery' }), path = f.input(request);
+    const originalRows = f.timeline(), skillFile = join(f.skill, 'SKILL.md');
+    writeFileSync(skillFile, readFileSync(skillFile, 'utf8').replace(/^version: .+$/m, 'version: 999.0.0'));
+    assert.equal(f.json('init').dataRebuilt, false); assert.deepEqual(f.read(dir), prior);
+    const next = f.open('IQ-OBS'); assert.equal(next.runId, prior.runId); assert.equal(next.skillVersion, prior.skillVersion); assert.equal(next.executionVersion, '999.0.0');
+    assert.deepEqual(f.timeline().slice(0, originalRows.length), originalRows);
     const stale = spawnSync(process.execPath, [join(oldSkill, 'scripts', 'records.mjs'), 'event', dir, path], { env: f.env, encoding: 'utf8', timeout: 15000 });
-    assert.match(stale.stderr, /DATA_NEWER_VERSION/); assert.equal(existsSync(dir), false);
-    assert.match(f.cli(['event', next.runDir, path]).stderr, /RUN_ID/);
-    assert.equal(f.timeline().length, 1);
+    assert.match(stale.stderr, /DATA_NEWER_VERSION/);
+    f.json('event', dir, path);
+    assert.equal(f.read(dir).skillVersion, prior.skillVersion); assert.equal(f.read(dir).executionVersion, '999.0.0');
+    assert.deepEqual(f.timeline().slice(-2).map(row => [row.skillVersion, row.executionVersion]), [[prior.skillVersion, '999.0.0'], [prior.skillVersion, '999.0.0']]);
+    request.runId = 'stale-other-run'; assert.match(f.cli(['event', dir, f.input(request)]).stderr, /RUN_ID/);
+});
+
+for (const stage of ['after-pending', 'after-run', 'after-part', 'after-timeline', 'before-delete']) test(`2.9 pending platform transaction recovers during upgrade before marker advancement: ${stage}`, t => {
+    const f = fixture(t), skillFile = join(f.skill, 'SKILL.md'), marker = join(f.data, '.skill-version.json');
+    const current = readFileSync(skillFile, 'utf8');
+    writeFileSync(skillFile, current.replace(/^version: .+$/m, 'version: 2.9.0'));
+    writeFileSync(marker, JSON.stringify({ schemaVersion: 1, skillVersion: '2.9.0' }));
+    const dir = f.bind(), req = f.platformInput(dir, '淘宝'), input = f.input(req);
+    const timelineFile = join(f.runs, readdirSync(f.runs).find(name => /^timeline-/.test(name)));
+    const before = new Map([join(dir, 'run.json'), join(dir, 'run-淘宝.json'), timelineFile].map(path => [resolve(path), existsSync(path) ? readFileSync(path, 'utf8') : null]));
+    const destination = stage === 'after-pending' ? f.pending : stage === 'after-run' ? join(dir, 'run.json') : stage === 'after-part' ? join(dir, 'run-淘宝.json') : timelineFile;
+    const injection = stage === 'before-delete'
+        ? hook(`const old=fs.unlinkSync;fs.unlinkSync=(p,...a)=>{if(String(p)===${JSON.stringify(f.pending)})throw new Error('legacy-stop');return old(p,...a)}`)
+        : hook(`const old=fs.renameSync;fs.renameSync=(a,b)=>{const r=old(a,b);if(String(b)===${JSON.stringify(destination)})throw new Error('legacy-stop');return r}`);
+    assert.match(f.cli(['checkpoint', dir, input], injection).stderr, /legacy-stop/);
+    // Reproduce the original 2.9 serialized format without an executionVersion field.
+    const strip = raw => {
+        const clean = value => { delete value.executionVersion; return JSON.stringify(value); };
+        try { return clean(JSON.parse(raw)) + '\n'; } catch { return raw.trim().split('\n').map(line => clean(JSON.parse(line))).join('\n') + '\n'; }
+    };
+    const digest = raw => createHash('sha256').update(raw).digest('hex');
+    const tx = JSON.parse(readFileSync(f.pending)); delete tx.executionVersion;
+    for (const target of tx.targets) {
+        const path = resolve(f.data, target.path), old = before.get(path);
+        target.content = strip(target.content); target.newHash = digest(target.content); target.beforeHash = old === null ? null : digest(strip(old));
+        if (existsSync(path)) writeFileSync(path, strip(readFileSync(path, 'utf8')));
+    }
+    writeFileSync(f.pending, JSON.stringify(tx));
+    const originalHistory = existsSync(timelineFile) ? readFileSync(timelineFile, 'utf8') : '';
+    writeFileSync(skillFile, current);
+    // Observe marker inside recovery: it must still be the old version at the last pending mutation.
+    const observe = hook(`const old=fs.unlinkSync;fs.unlinkSync=(p,...a)=>{if(String(p)===${JSON.stringify(f.pending)} && JSON.parse(fs.readFileSync(${JSON.stringify(marker)},'utf8')).skillVersion!=='2.9.0')throw new Error('marker-advanced-before-recovery');return old(p,...a)}`);
+    const init = f.cli(['init'], observe); assert.equal(init.status, 0, init.stderr); assert.equal(JSON.parse(init.stdout).dataRebuilt, false);
+    assert.equal(existsSync(f.pending), false); assert.equal(JSON.parse(readFileSync(marker)).skillVersion, f.read(dir).executionVersion ?? current.match(/^version: (.+)$/m)[1].trim());
+    assert.equal(f.read(dir).skillVersion, '2.9.0'); assert.equal(f.read(dir).executionVersion, undefined);
+    assert.equal(f.timeline().filter(row => row.eventId === req.eventId).length, 1);
+    if (stage === 'after-timeline' || stage === 'before-delete') assert.equal(readFileSync(timelineFile, 'utf8'), originalHistory);
+    const reopened = f.open('IQ-OBS'); assert.equal(reopened.runId, req.runId); assert.equal(reopened.skillVersion, '2.9.0'); assert.equal(reopened.executionVersion, current.match(/^version: (.+)$/m)[1].trim());
+    assert.equal(f.json('checkpoint', dir, input).replayed, true);
+    const part = JSON.parse(readFileSync(join(dir, 'run-淘宝.json'))); assert.equal(part.skillVersion, '2.9.0'); assert.equal(part.executionVersion, undefined);
+    const update = f.platformInput(dir, '淘宝', { status: 'completed', stages: { repliesDone: now() } }); update.expectedRevision = part.revision;
+    f.json('checkpoint', dir, f.input(update)); f.ok('merge', dir, '--partial', '淘宝');
+    f.ok('finish', join(dir, 'run.json'));
+    const archived = readFileSync(join(f.data, 'processed-tasks.jsonl'), 'utf8').trim().split('\n').map(JSON.parse).at(-1);
+    assert.equal(archived.skillVersion, '2.9.0'); assert.equal(archived.executionVersion, reopened.executionVersion);
+    assert.equal(JSON.parse(readFileSync(join(dir, 'run-淘宝.json'))).executionVersion, reopened.executionVersion);
+});
+
+test('compatible old runs preserve metadata guardrails and bind platform creation version', t => {
+    const f = fixture(t), dir = f.bind(), runFile = join(dir, 'run.json'), original = f.read(dir);
+    for (const change of [run => { delete run.executionVersion; }, run => { run.skillVersion = '2.8.0'; }, run => { run.executionVersion = '999.0.0'; }]) {
+        const run = structuredClone(original); change(run); writeFileSync(runFile, JSON.stringify(run));
+        assert.match(f.cli(['open-run', 'IQ-OBS']).stderr, /RUN_VERSION/);
+    }
+    writeFileSync(runFile, JSON.stringify(original));
+    f.json('checkpoint', dir, f.input(f.platformInput(dir, '淘宝')));
+    const path = join(dir, 'run-淘宝.json'), part = JSON.parse(readFileSync(path)); part.skillVersion = '2.9.0'; writeFileSync(path, JSON.stringify(part));
+    assert.match(f.cli(['check', dir, '淘宝', '--partial']).stderr, /RUN_ID/);
 });
 
 test('skip/manual without a run preserve known task facts without inventing a business run', t => {
@@ -229,6 +292,29 @@ test('pending path and identity corruption rejects before writes and preserves o
         assert.notEqual(f.cli(['open-run', 'IQ-OBS']).status, 0); assert.equal(readFileSync(join(dir, 'run.json'), 'utf8'), before); assert.equal(readFileSync(outside, 'utf8'), 'keep');
     }
     writeFileSync(f.pending, JSON.stringify(original)); f.open('IQ-OBS'); assert.equal(existsSync(f.pending), false);
+});
+
+test('upgrade rejects corrupt/newer pending without writes or marker advancement', t => {
+    const f = fixture(t), dir = f.bind(), marker = join(f.data, '.skill-version.json');
+    const originalMarker = readFileSync(marker), originalRun = readFileSync(join(dir, 'run.json'));
+    const injection = hook(`const old=fs.renameSync;fs.renameSync=(a,b)=>{const r=old(a,b);if(String(b)===${JSON.stringify(f.pending)})throw new Error('stop');return r}`);
+    f.cli(['event', dir, f.input(f.request(dir, { eventType: 'run.resumed', phase: 'recovery' }))], injection);
+    const pending = readFileSync(f.pending, 'utf8'), tx = JSON.parse(pending);
+    const skillFile = join(f.skill, 'SKILL.md'); writeFileSync(skillFile, readFileSync(skillFile, 'utf8').replace(/^version: .+$/m, 'version: 3.0.0'));
+    const variants = ['{bad', ...[
+        value => { value.executionVersion = '999.0.0'; },
+        value => { delete value.executionVersion; },
+        value => { value.targets[0].newHash = 'corrupt'; },
+        value => { value.targets.at(-1).path = '../outside.txt'; },
+        value => { value.runId = 'other-run'; },
+    ].map(change => { const value = structuredClone(tx); change(value); return JSON.stringify(value); })];
+    for (const value of variants) {
+        writeFileSync(f.pending, value); assert.notEqual(f.cli(['init']).status, 0);
+        assert.deepEqual(readFileSync(marker), originalMarker); assert.deepEqual(readFileSync(join(dir, 'run.json')), originalRun);
+        assert.equal(readFileSync(f.pending, 'utf8'), value);
+    }
+    writeFileSync(f.pending, pending); assert.equal(f.json('init').dataRebuilt, false);
+    assert.equal(JSON.parse(readFileSync(marker)).skillVersion, '3.0.0'); assert.equal(existsSync(f.pending), false);
 });
 
 test('draft receipt unknown blocks both payload paths; confirmed requires exact verification evidence', t => {

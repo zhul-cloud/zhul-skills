@@ -1,4 +1,4 @@
-// 测试阶段个人目录版本边界。只有 records init 可重建；不迁移或备份。
+// 个人目录版本边界：保留运行增强基线及以后的数据；只有 records init 可清理旧格式。
 import { lstatSync, realpathSync, readdirSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, rmdirSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -11,6 +11,7 @@ const skillDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const home = resolve(homedir());
 export const VERSION_FILE = join(DATA_DIR, '.skill-version.json');
 export const LIFECYCLE_LOCK = join(home, '.zhul-trade-sourcing.lifecycle.lock');
+export const DATA_BASELINE = '2.9.0';
 const fail = (code, message) => { const e = new Error(`${code}: ${message}`); e.code = code; throw e; };
 const canonical = (p) => process.platform === 'win32' ? resolve(p).toLowerCase() : resolve(p);
 function stat(p) { try { return lstatSync(p); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } }
@@ -60,6 +61,10 @@ const compare = (a, b) => {
     for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i] ? 1 : -1;
     return 0;
 };
+export function compatibleVersion(version, current = currentVersion()) {
+    return typeof version === 'string' && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version)
+        && compare(version, DATA_BASELINE) >= 0 && compare(version, current) <= 0;
+}
 function checkVersion(version, initialized) {
     const stored = marker();
     if (stored && compare(version, stored.skillVersion) < 0) fail('DATA_NEWER_VERSION', '数据由较新技能初始化，请使用对应新版；不自动降级清理');
@@ -127,7 +132,10 @@ export function initializeData(action) {
     return withLock(() => {
         const version = currentVersion(); validateDefaults();
         const stored = checkVersion(version, false);
-        const reset = stored?.skillVersion !== version;
+        const reset = !stored || compare(stored.skillVersion, DATA_BASELINE) < 0;
+        if (!reset && stored.skillVersion !== version) {
+            for (const name of ['.settings.lock', '.contacts.lock']) if (safeNode(join(DATA_DIR, name))) fail('DATA_BUSY', '保留现有写锁；不能在其他写者持锁时推进版本');
+        }
         if (reset) {
             windowsPreflight();
             const plan = removalPlan(); // 完整预检后才开始逐项删除，不递归跟进链接。
@@ -139,7 +147,7 @@ export function initializeData(action) {
             mkdirSync(DATA_DIR);
         }
         const result = action();
-        if (reset) {
+        if (stored?.skillVersion !== version) {
             const temp = join(DATA_DIR, `.version-${randomUUID()}.tmp`);
             try {
                 writeFileSync(temp, JSON.stringify({ schemaVersion: 1, skillVersion: version }) + '\n', { flag: 'wx', mode: 0o600 });
