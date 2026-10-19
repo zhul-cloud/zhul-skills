@@ -106,6 +106,24 @@ function environment(platform, names, header = '目标店', controls = [], optio
     return { counts, state, context, call: async (name, input) => plain(await fn(name)(browser, 42, input)) };
 }
 
+test('1688 previews never inspect message content outside conversation rows', async () => {
+    for (const names of [[], ['目标店'], ['目标店', '目标店']]) {
+        const env = environment('air.1688.com', names);
+        let unrelatedReads = 0;
+        const unrelated = { querySelector: () => null,
+            get innerText() { unrelatedReads++; return '目标店\n不属于本任务会话的正文'; } };
+        const query = env.state.doc.querySelectorAll;
+        env.state.doc.querySelectorAll = (selector) => selector === '.content' ? [...env.state.items, unrelated] : query(selector);
+        const out = await env.call('imPreviews', ['目标店']);
+        if (!names.length) assert.deepEqual(out, {});
+        else if (names.length === 1) assert.match(out['目标店'], /最后一条/);
+        else assert.equal(out.error, 'CHAT_AMBIGUOUS');
+        assert.equal(unrelatedReads, 0);
+        assert.equal(env.counts.previews, names.length === 1 ? 1 : 0);
+        assert.equal(env.counts.clicks, 0);
+    }
+});
+
 for (const platform of ['market.m.taobao.com', 'air.1688.com']) {
     for (const key of ['', '  ', null, {}, 12, { contact: 12 }, { contact: '目标店', headerName: 12 }]) {
         test(`${platform} rejects invalid target ${JSON.stringify(key)} before page access`, async () => {

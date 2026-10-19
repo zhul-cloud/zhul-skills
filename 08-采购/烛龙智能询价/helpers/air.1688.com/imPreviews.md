@@ -26,7 +26,8 @@ async (browser, pageId, keys) => {
     const o = Object.create(null);
     const nameOf = (e) => (e.querySelector('.name')?.textContent || e.innerText.split(/\r?\n/)[0] || '').trim();
     for (const k of keys) {
-      const found = [...f.contentDocument.querySelectorAll('.content')].filter((e) => nameOf(e) === k.trim());
+      const found = [...f.contentDocument.querySelectorAll('.conversation-item')]
+        .map((row) => row.querySelector('.content')).filter((e) => e && nameOf(e) === k.trim());
       if (found.length > 1) return { ok: false, error: 'CHAT_AMBIGUOUS' };
       if (found.length === 1) o[k] = found[0].innerText.replace(/\s+/g, ' ').trim().slice(0, 160);
     }

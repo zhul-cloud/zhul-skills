@@ -896,6 +896,133 @@ test('finish archives a snapshot once, excludes unsent candidates and allows lat
     assert.equal(f.json('processed', 'IQ-TEST').processed, true);
 });
 
+test('finish preserves unchanged quote dates across days and refreshes only new business facts in the same run/shop/item', (t) => {
+    const dayOne = '2026-10-01T12:00:00.000Z';
+    let day = dayOne;
+    const identity = shopIdentity(); identity.verifiedAt = dayOne;
+    const value = run({ items: [{ itemId: 11, model: 'SAME-MODEL' }, { itemId: 22, model: 'SAME-MODEL' }],
+        shops: [shop({ sentAt: dayOne, firstHumanReplyAt: dayOne, contact: '测试店', identity,
+            reply: '报价100', quotes: [quote(11, { taxIncluded: true, taxRate: 13 })],
+            pendingMessage: { messageId: 'thanks', kind: 'thankYou', text: '谢谢', preparedAt: dayOne, confirmedAt: dayOne, state: 'confirmed' }, thankYou: '谢谢' }),
+        shop({ platform: '1688', shop: '另一平台店', itemIds: [22], quotes: [quote(22)], sentAt: dayOne })] });
+    let f = fixture(t, value);
+    const cliAt = (...args) => {
+        const hook = `const OriginalDate=Date;const fixed=${JSON.stringify(day)};globalThis.Date=class extends OriginalDate{constructor(...args){super(...(args.length?args:[fixed]))}static now(){return OriginalDate.parse(fixed)}};`;
+        const result = spawnSync(process.execPath, ['--import', 'data:text/javascript,' + encodeURIComponent(hook), f.script, ...args],
+            { env: { ...process.env, HOME: f.home, USERPROFILE: f.home }, encoding: 'utf8', timeout: 15000 });
+        assert.equal(result.status, 0, result.stderr || result.error?.message);
+        return result.stdout;
+    };
+    const finish = () => {
+        f.write('run.json', value); cliAt('finish', f.path);
+        const rows = f.lines('records.jsonl');
+        return rows.filter((r) => r.archiveKey === rows.at(-1).archiveKey);
+    };
+    let rows = finish();
+    assert.deepEqual(rows.map((r) => r.itemId), [11, 22]);
+    assert.deepEqual(rows.map((r) => r.time), [dayOne, dayOne]);
+    day = '2026-10-10T12:00:00.000Z';
+    value.shops[1].quotes[0].price = 200;
+    rows = finish();
+    assert.deepEqual(rows.map((r) => r.time), [dayOne, day]);
+    assert.ok(rows.every((r) => r.recordedAt === day));
+    assert.deepEqual(JSON.parse(cliAt('recent', 'SAME-MODEL', '7')).map((r) => r.shop), ['另一平台店']);
+    day = '2026-10-11T12:00:00.000Z';
+    value.submitted = true;
+    value.shops[0].quotes[0].price = '100.00';
+    value.shops[0].quotes[0].taxRate = '13';
+    value.shops[0].identity.verifiedAt = day;
+    value.shops[0].identity.contact = value.shops[0].contact = '已核验客服别名';
+    value.shops[0].url = 'https://example.invalid/item';
+    value.shops[0].pendingMessage.confirmedAt = day;
+    rows = finish();
+    assert.deepEqual(rows.map((r) => r.time), [dayOne, '2026-10-10T12:00:00.000Z']);
+    assert.equal(rows[0].identity.verifiedAt, day);
+    assert.match(cliAt('stats', '7'), /近 7 天询价 1 家店/);
+    day = '2026-10-12T12:00:00.000Z';
+    value.shops[0].quotes[0].price = 125;
+    rows = finish(); assert.equal(rows[0].time, day);
+    day = '2026-10-13T12:00:00.000Z';
+    value.shops[0].reply = '补充新的人工回复';
+    rows = finish(); assert.equal(rows[0].time, '2026-10-12T12:00:00.000Z');
+    const reusedFrom = '2026-09-01T12:00:00.000Z';
+    day = '2026-10-14T12:00:00.000Z';
+    value.shops[0].reusedFrom = reusedFrom;
+    value.shops[0].quotes[0].price = 130;
+    rows = finish(); assert.equal(rows[0].time, reusedFrom);
+    const before = readFileSync(join(f.home, '.zhul-trade-sourcing', 'records.jsonl'), 'utf8');
+    cliAt('finish', f.path);
+    assert.equal(readFileSync(join(f.home, '.zhul-trade-sourcing', 'records.jsonl'), 'utf8'), before);
+    day = '2026-10-15T12:00:00.000Z';
+    value.runId = 'separate-inquiry-run';
+    value.shops[0].reusedFrom = null;
+    rows = finish(); assert.ok(rows.every((r) => r.time === day));
+    Object.assign(value, run({ items: [{ itemId: 11, model: 'SAME-MODEL' }, { itemId: 22, model: 'SAME-MODEL' }],
+        shops: [shop({ sentAt: dayOne, itemIds: [11, 22], quotes: [quote(11)] })] }));
+    f = fixture(t, value);
+    day = dayOne;
+    finish();
+    day = '2026-10-10T12:00:00.000Z';
+    value.shops[0].quotes[0].itemId = '11';
+    value.shops[0].quotes.push(quote(22, { price: 200 }));
+    value.shops[0].reply = '只补充第二个型号报价200';
+    value.shops[0].firstHumanReplyAt = day;
+    value.shops[0].endReason = '信息齐全';
+    rows = finish();
+    assert.deepEqual(rows.map((r) => r.time), [dayOne, day]);
+    Object.assign(value, run({ shops: [shop({ sentAt: dayOne, status: '未回复', quotes: [] })] }));
+    f = fixture(t, value);
+    day = dayOne; finish();
+    day = '2026-10-10T12:00:00.000Z';
+    value.shops[0].status = '已回复';
+    value.shops[0].reply = '尚未报出价格';
+    value.shops[0].firstHumanReplyAt = day;
+    rows = finish(); assert.equal(rows[0].time, day);
+});
+
+test('controlled archive corrections A to B to A stay current while adjacent and metadata-only repeats are idempotent', (t) => {
+    const f = fixture(t);
+    let serial = 0;
+    const input = (value) => { const path = join(f.root, `archive-input-${++serial}.json`); writeFileSync(path, JSON.stringify(value)); return path; };
+    const read = (dir) => JSON.parse(readFileSync(join(dir, 'run.json'), 'utf8'));
+    const at = now();
+    const setup = (task) => {
+        const dir = f.json('open-run', task).runDir;
+        const current = read(dir);
+        f.json('checkpoint', dir, input({ runId: current.runId, eventId: `setup-${++serial}`, actor: 'main', scope: 'run', expectedRevision: current.revision,
+            event: { eventType: 'task.read', phase: 'task' }, snapshot: { ...facts(current), taskId: 1, items: [{ itemId: 11, model: 'MODEL-A' }], platforms: ['淘宝'] } }));
+        return dir;
+    };
+    const archivePrice = (dir, price) => {
+        const current = read(dir);
+        const path = join(dir, 'run-淘宝.json');
+        const previous = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : null;
+        f.json('checkpoint', dir, input({ runId: current.runId, eventId: `quote-${++serial}`, actor: '淘宝', scope: 'platform', platform: '淘宝', expectedRevision: previous?.revision ?? 0,
+            event: { eventType: 'quote.recorded', phase: 'messaging', itemIds: [11], shop: '测试店' },
+            snapshot: { platform: '淘宝', status: 'completed', stages: { repliesDone: at }, shops: [shop({ sentAt: at, quotes: [quote(11, { price })] })], noStock: [] } }));
+        f.ok('merge', dir);
+        return f.ok('finish', join(dir, 'run.json'));
+    };
+    const dir = setup('IQ-ARCHIVE-CHAIN');
+    archivePrice(dir, 100);
+    assert.match(f.ok('finish', join(dir, 'run.json')), /已归档，未重复/);
+    assert.match(archivePrice(dir, 100), /已归档，未重复/); // checkpoint/merge only changed managed metadata.
+    const other = setup('IQ-OTHER-ARCHIVE');
+    archivePrice(other, 999);
+    assert.match(f.ok('finish', join(dir, 'run.json')), /已归档，未重复/); // Another run does not change this chain.
+    archivePrice(dir, 125);
+    assert.equal(f.json('recent', 'MODEL-A')[0].price, '125');
+    archivePrice(dir, 100);
+    assert.equal(f.json('recent', 'MODEL-A')[0].price, '100');
+    const archives = f.lines('processed-tasks.jsonl').filter((r) => r.runId === read(dir).runId && r.archiveKey);
+    assert.equal(archives.length, 3);
+    assert.equal(archives[0].snapshot, archives[2].snapshot);
+    assert.equal(new Set(archives.map((r) => r.archiveKey)).size, 3);
+    const before = readFileSync(join(f.home, '.zhul-trade-sourcing', 'records.jsonl'), 'utf8');
+    assert.match(f.ok('finish', join(dir, 'run.json')), /已归档，未重复/);
+    assert.equal(readFileSync(join(f.home, '.zhul-trade-sourcing', 'records.jsonl'), 'utf8'), before);
+});
+
 test('new-run resumes the same directory and open-run keeps deadline, messages and completed platforms', (t) => {
     const f = fixture(t);
     const dir = f.ok('new-run', 'IQ-RESUME').trim();
@@ -1047,6 +1174,28 @@ test('recent uses the latest archived correction without reviving old prices or 
     assert.equal(historical.length, 1);
     assert.equal(historical[0].time, value.shops[0].reusedFrom);
     assert.equal(historical[0].price, '130');
+});
+
+test('recent keeps the newest cross-run business observation after late old archives, without reviving a run correction', (t) => {
+    const f = fixture(t); f.stamp();
+    const path = join(f.home, '.zhul-trade-sourcing', 'records.jsonl');
+    const old = ago(10 * 24 * 60), newer = ago(24 * 60), current = now();
+    const row = (runId, price, time, recordedAt = time) => ({ runId, itemId: 11, platform: '淘宝', shop: '同一店', model: 'MODEL-A', price, time, recordedAt });
+    const records = [row('A', '100', old), row('B', '200', newer), row('A', '100', old, current)];
+    const recent = () => { writeFileSync(path, records.map((r) => JSON.stringify(r)).join('\n') + '\n'); return f.json('recent', 'MODEL-A', '7'); };
+    assert.equal(recent()[0].price, '200'); // A's later metadata archive keeps its original business date.
+    records.push(row('B', '', ago(20 * 24 * 60), current));
+    assert.deepEqual(recent(), []); // The latest B correction is outside the window; its earlier 200 must not revive.
+    records.push(row('B', '125', current, current));
+    assert.equal(recent()[0].price, '125');
+    records.push(row('C', '300', current, newer));
+    assert.equal(recent()[0].price, '125'); // Equal business time prefers recordedAt over append order.
+    records.push(row('D', '400', current, current));
+    assert.equal(recent()[0].price, '400'); // Equal time and recordedAt prefer the later row.
+    records.push(row('D', '900', 'invalid-time', current));
+    assert.equal(recent()[0].price, '125'); // Invalid latest D cannot hide valid B or revive D's prior 400.
+    writeFileSync(path, '{');
+    assert.notEqual(f.cli('recent', 'MODEL-A').status, 0);
 });
 
 test('failed atomic replacement keeps the previous checkpoint intact', (t) => {

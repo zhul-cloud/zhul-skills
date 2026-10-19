@@ -442,10 +442,14 @@ async (browser, pageId, req) => {
       const freshKeys = new Set(fresh.map((e) => keyOf(e.channel, e.shopName)));
       // 本人原有的报价行照带，同一平台同一店铺的以本次为准
       const existing = keptQuotes(item, keepStatuses(body.submit, review), new Set(), review);
-      // 本次报价不上传附件；更新同店报价时继承被替换版本的附件（同店仍以草稿优先）
+      // 更新同店报价时保留被替换版本的附件、供应商关联及非审核流推荐（同店仍以草稿优先）
       for (const e of fresh) {
         const previous = existing.find((q) => keyOf(q.channel, q.shopName) === keyOf(e.channel, e.shopName));
-        if (previous) e.attachmentIds = previous.attachmentIds;
+        if (previous) {
+          e.attachmentIds = previous.attachmentIds;
+          if (previous.supplierId != null) e.supplierId = previous.supplierId;
+          if (previous.recommended === true) e.recommended = true;
+        }
       }
       const keep = existing.filter((q) => !freshKeys.has(keyOf(q.channel, q.shopName)));
       const quotes = [...keep, ...fresh];
