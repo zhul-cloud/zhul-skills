@@ -213,7 +213,7 @@ for (const prior of ['2.9.0', '2.9.999', '2.10.1']) test(`compatible upgrade pre
     const result = f.ok('init'); assert.equal(result.dataRebuilt, false); assert.equal(result.erpUrl, 'https://erp.example.invalid');
     names.forEach((name, i) => assert.deepEqual(readFileSync(join(f.data, name)), before[i]));
     assert.equal(JSON.parse(readFileSync(f.marker)).skillVersion, f.version);
-    assert.deepEqual(JSON.parse(f.run('settings', ['json']).stdout).settings.shopsPerItem, { min: 2, max: 2 });
+    assert.deepEqual(JSON.parse(f.run('settings', ['json']).stdout).settings.inquiryStrategy, { initialShopsPerPlatform: 2, targetComparableQuotes: 3, maxShopsPerPlatform: 4 });
 });
 
 for (const lockName of ['.settings.lock', '.contacts.lock']) test(`compatible upgrade keeps marker and existing business lock (${lockName})`, t => {

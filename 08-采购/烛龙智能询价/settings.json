@@ -1,6 +1,6 @@
 {
   "confirmBeforeSend": false,
-  "shopsPerItem": { "min": 2, "max": 2 },
+  "inquiryStrategy": { "initialShopsPerPlatform": 2, "targetComparableQuotes": 3, "maxShopsPerPlatform": 4 },
   "firstHumanReplyMinutes": 5,
   "followUpReplyMinutes": 3,
   "pollIntervalSeconds": { "min": 10, "max": 30 },

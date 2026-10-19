@@ -5,6 +5,7 @@
 //   node records.mjs install-helpers [--force]    维护者可选磁盘导出；需显式 BROWSEROS_HELPERS_DIR，copied 不等于 runtimeLoaded
 //   node records.mjs new-run <任务编号>           恢复唯一未提交 run；没有时新建，输出路径
 //   node records.mjs open-run <任务编号>          同 new-run，输出 JSON（恢复标志、已完成平台、ERP 核对提示）
+//   node records.mjs plan-inquiry <本次目录>       主执行者按最新平台事实保存首轮/补轮累计授权，输出有效/等待/不足原因
 //   node records.mjs recent <型号> [天数]         查询该型号近 N 天问过的店家（防止重复询价），天数默认取有效配置的 dedupeDays
 //   node records.mjs processed <任务编号>         查询该任务是否已在本机提交过回价
 //   node records.mjs next <任务编号...>           按给出的顺序，返回第一个本机未提交、未跳过且可继续的任务；manual 有真实未完 run 时优先恢复
@@ -40,7 +41,7 @@ const HELPERS_DIR = process.env.BROWSEROS_HELPERS_DIR;
 
 const [cmd, ...args] = process.argv.slice(2);
 let SETTINGS;
-let validateIdentity, coverageProblems, coverageTransitionProblems;
+let validateIdentity, coverageProblems, coverageTransitionProblems, inquiryFactProblems, inquiryCheckpointProblems, planInquiry;
 let initializeData, withCurrentData, withDataRead, currentVersion;
 let store;
 
@@ -266,6 +267,16 @@ function erpItems(runPath, args = []) {
             continue;
         }
         const ns = (run.noStock ?? []).filter((n) => String(n.itemId) === String(i.itemId));
+        if (run.inquiryPlan) {
+            const asked = (run.shops ?? []).filter(s => s.itemIds?.some(id => String(id) === String(i.itemId)) && (s.sentAt || s.reusedFrom));
+            const unknown = (run.shops ?? []).some(s => s.itemIds?.some(id => String(id) === String(i.itemId)) && s.pendingMessage?.state === 'pending');
+            if (!asked.length || unknown || asked.some(s => !s.noStockItemIds?.some(id => String(id) === String(i.itemId)))) {
+                skipItemIds.push(Number(i.itemId));
+                console.error(`型号 ${i.model}（itemId ${i.itemId}）无可填报价且未全部明确无货，需人工处理；有效报价不足不等于无货`);
+                continue;
+            }
+            if (!ns.length) ns.push({ note: '所有实际联系商家均明确回复该型号无货' });
+        }
         if (ns.length) {
             items.push({ itemId: Number(i.itemId), noStock: true, noStockNote: ns.map((n) => n.note).filter(Boolean).join('；').slice(0, 300), quotes: [] });
         }
@@ -303,7 +314,7 @@ function resumeProgress(dir, run) {
         const path = platformFile(dir, platform);
         if (!existsSync(path)) continue;
         const part = store.readPart(dir, platform, run);
-        const problems = validatePart(run, part, platform, true);
+        const problems = [...validatePart(run, part, platform, true), ...inquiryCheckpointProblems(run, run.inquiryPlan ? readParts(dir, run) : [], part, part)];
         if (problems.length) throw new Error(`${path} 记录损坏：${problems.join('；')}`);
         if (partState(part) === 'completed' || part.skipped) completedPlatforms.push(platform);
         if (partState(part) === 'interrupted') stopAfterTask = true;
@@ -402,6 +413,7 @@ function mark(result, taskCode, reason) {
 
 function validateRun(run) {
     const problems = [];
+    if (run.userStopped !== undefined && typeof run.userStopped !== 'boolean') problems.push('userStopped 必须是布尔值');
     const ids = new Set((run.items ?? []).map((i) => String(i.itemId)));
     if (!run.task) problems.push('缺少 task（任务编号）');
     if (!ids.size) problems.push('缺少 items（每个型号的 itemId 和 model）');
@@ -485,6 +497,7 @@ function validateRun(run) {
         if (!ids.has(String(n.itemId))) problems.push(`incompleteItems：itemId ${n.itemId} 不在本任务里`);
         if (!String(n.reason ?? '').trim()) problems.push(`incompleteItems：itemId ${n.itemId} 缺少未完成原因 reason`);
     }
+    for (const platform of new Set((run.shops ?? []).map(s => s.platform))) problems.push(...inquiryFactProblems(run, { platform, shops: run.shops.filter(s => s.platform === platform) }));
     return problems;
 }
 
@@ -502,9 +515,36 @@ function loadRun(path) {
 const validTime = (value) => typeof value === 'string' && value.trim() !== '' && !Number.isNaN(Date.parse(value));
 const partState = (part) => part.status ?? (part.skipped || part.stages?.repliesDone ? 'completed' : 'running');
 const humanHelpBlocked = (help) => help != null && (help.status !== 'resolved' || help.verified !== true || !validTime(help.verifiedAt));
+const readParts = (dir, run, tolerateUnavailable = false) => run.platforms.map(platform => {
+    try { return store.readPart(dir, platform, run); }
+    catch (error) {
+        if (!tolerateUnavailable) throw error;
+        // 仅保存独立结果时的只读缺失视图，不写成真实平台中断，也不用于授权新首发或补轮。
+        return { platform, status: 'interrupted', shops: [], unavailableReason: error.message };
+    }
+}).filter(Boolean);
+
+function planInquiryRun(runDir) {
+    const run = store.readManaged(runDir);
+    if (!run.items?.length || !run.platforms?.length || run.submitted) throw new Error('INQUIRY_PLAN: 需要本任务未提交的已绑定明细及平台');
+    const parts = readParts(runDir, run);
+    for (const part of parts) {
+        const problems = validatePart(run, part, part.platform, true);
+        if (problems.length) throw new Error('INQUIRY_PLAN: ' + problems.join('；'));
+    }
+    const result = planInquiry(run, parts, SETTINGS.inquiryStrategy);
+    if (result.changed) {
+        run.inquiryPlan = result.plan;
+        run.revision++;
+        store.commit(runDir, run, { event: { eventType: 'inquiry.planned', phase: 'selection',
+            correlationId: `inquiry-round-${result.plan.round}`, outcome: result.plan.round === 1 ? 'initial' : 'supplement' } });
+    }
+    console.log(JSON.stringify(result, null, 2));
+}
 
 function finalProblems(run) {
     const problems = [];
+    if (run.userStopped) problems.push('用户已停止本次询价，未经明确恢复不能正式提交');
     if (simulated(run)) problems.push('模拟 run 不得提交');
     if (!run.platforms?.length) problems.push('缺少 platforms');
     if (humanHelpBlocked(run.humanHelp)) problems.push('ERP 人助尚未核验解除，不能正式提交');
@@ -519,7 +559,7 @@ function finalProblems(run) {
 }
 
 function validatePart(run, part, platform, partial = false, effectiveSettings) {
-    const problems = coverageProblems(run, part, effectiveSettings);
+    const problems = [...coverageProblems(run, part, effectiveSettings), ...inquiryFactProblems(run, part)];
     if (run.platforms && !run.platforms.includes(platform)) problems.push(`平台「${platform}」不在本次 platforms 里`);
     if (String(part.platform ?? '').trim() !== platform) {
         problems.push(`platform 应为「${platform}」，现在是「${part.platform ?? ''}」`);
@@ -564,7 +604,8 @@ function merge(runDir, args = []) {
             console.error(`${f}：缺少 platform（平台）`);
             throw Object.assign(new Error('记录校验失败'), { exitCode: 2, reported: true });
         }
-        const problems = validatePart(run, part, f.slice(4, -5), partial);
+        const problems = [...validatePart(run, part, f.slice(4, -5), partial),
+            ...inquiryCheckpointProblems(run, run.inquiryPlan ? readParts(runDir, run, partial) : [], part, part)];
         if (problems.length) {
             console.error(`${f} 有问题，合并没有写入 run.json：\n- ` + problems.join('\n- '));
             throw Object.assign(new Error('记录校验失败'), { exitCode: 2, reported: true });
@@ -612,7 +653,8 @@ function check(runDir, platform, args = []) {
     const run = store.readManaged(runDir);
     const part = store.readPart(runDir, platform, run);
     if (!part) throw new Error(`找不到 run-${platform}.json`);
-    const problems = validatePart(run, part, platform, args.includes('--partial'));
+    const problems = [...validatePart(run, part, platform, args.includes('--partial')),
+        ...inquiryCheckpointProblems(run, run.inquiryPlan ? readParts(runDir, run, true) : [], part, part)];
     if (problems.length) {
         console.error(`run-${platform}.json 有问题：\n- ` + problems.join('\n- '));
         throw Object.assign(new Error('记录校验失败'), { exitCode: 2, reported: true });
@@ -641,6 +683,7 @@ function checkpoint(runDir, inputPath, eventOnly = false) {
         for (const key of store.META) if (Object.hasOwn(input.snapshot, key) && store.stable(input.snapshot[key]) !== store.stable(old?.[key])) throw new Error(`RUN_METADATA: ${key} 由脚本维护`);
         const snapshot = store.business(input.snapshot);
         if (input.scope === 'run') {
+            if (store.stable(snapshot.inquiryPlan) !== store.stable(run.inquiryPlan)) throw new Error('INQUIRY_PLAN: 补店授权只能由主执行者 plan-inquiry 计算保存');
             if (snapshot.task !== run.task || run.taskId != null && snapshot.taskId !== run.taskId
                 || run.items.length && store.stable(snapshot.items?.map(i => [String(i.itemId), i.model])) !== store.stable(run.items.map(i => [String(i.itemId), i.model]))) throw new Error('RUN_IDENTITY: 不能改变已绑定任务或型号身份');
             if (run.platforms.length && store.stable(snapshot.platforms) !== store.stable(run.platforms)) throw new Error('RUN_PLATFORM: 不能改变已绑定平台范围');
@@ -656,9 +699,12 @@ function checkpoint(runDir, inputPath, eventOnly = false) {
         } else {
             if (snapshot.platform !== platform) throw new Error('RUN_PLATFORM: snapshot.platform与scope不符');
             // 已完成平台不因用户后改目标重新挑店；新/未完平台写入必须使用本次有效配额。
-            const quota = old?.searchCoverage && partState(old) === 'completed' && partState(snapshot) === 'completed'
-                ? { shopsPerItem: old.searchCoverage.shopsPerItem } : SETTINGS;
-            const problems = [...validatePart(run, snapshot, platform, true, quota), ...coverageTransitionProblems(old, snapshot)];
+            const quota = run.inquiryPlan ? { inquiryStrategy: run.inquiryPlan.policy } : SETTINGS;
+            const newInitial = (snapshot.shops ?? []).some(s => s.pendingMessage?.kind === 'initial' && s.pendingMessage.state === 'pending'
+                && !(old?.shops ?? []).some(prior => prior.pendingMessage?.messageId === s.pendingMessage.messageId && prior.pendingMessage.kind === 'initial' && prior.pendingMessage.state === 'pending'));
+            const parts = readParts(runDir, run, !newInitial);
+            const problems = [...validatePart(run, snapshot, platform, true, quota), ...coverageTransitionProblems(old, snapshot),
+                ...inquiryCheckpointProblems(run, parts, old, snapshot)];
             if (problems.length) throw new Error('CHECKPOINT_INVALID: ' + problems.join('；'));
             const at = new Date().toISOString();
             const part = { ...snapshot, schemaVersion: 1, runId: run.runId, skillVersion: run.skillVersion, executionVersion: currentVersion(), revision: revision + 1,
@@ -819,6 +865,9 @@ function finish(runPath) {
                 task: run.task, platform, itemId: q.itemId, reusedFrom: s.reusedFrom ?? null, model: modelOf.get(String(q.itemId)) ?? '',
                 shop: s.shop, contact: s.contact ?? '', url: s.url ?? '', status: s.status, reply: s.reply ?? '',
                 ...(s.identity != null ? { identity: s.identity } : {}),
+                ...(s.businessEntity != null ? { businessEntity: s.businessEntity } : {}),
+                ...(s.noStockItemIds != null ? { noStockItemIds: s.noStockItemIds } : {}),
+                ...(q.comparability != null ? { comparability: q.comparability } : {}),
                 price: s.status === '无货' ? '无货' : String(q.price ?? ''),
                 taxIncluded: !!q.taxIncluded, taxRate: q.taxRate ?? null,
                 condition: q.condition ?? '', leadTime: q.leadTime ?? '', freeShipping: q.freeShipping !== false, sentAt: s.sentAt ?? '',
@@ -897,7 +946,7 @@ try {
         ({ initializeData, withCurrentData, withDataRead, currentVersion } = await import('./data-lifecycle.mjs'));
         store = await import('./run-store.mjs');
         validateIdentity = (await import('./contacts.mjs')).identityProblems;
-        ({ coverageProblems, coverageTransitionProblems } = await import('./search-coverage.mjs'));
+        ({ coverageProblems, coverageTransitionProblems, inquiryFactProblems, inquiryCheckpointProblems, planInquiry } = await import('./search-coverage.mjs'));
     }
     const execute = () => {
     if (cmd !== 'version' && cmd !== 'init') SETTINGS = config.readSettings().settings;
@@ -911,6 +960,8 @@ try {
         newRun(args[0]);
     } else if (cmd === 'open-run' && args[0]) {
         newRun(args[0], true);
+    } else if (cmd === 'plan-inquiry' && args.length === 1) {
+        planInquiryRun(args[0]);
     } else if (['checkpoint', 'event'].includes(cmd) && args.length === 2) {
         checkpoint(args[0], args[1], cmd === 'event');
     } else if (cmd === 'recent' && args[0]) {
@@ -943,6 +994,7 @@ try {
             '  node records.mjs install-helpers [--force]',
             '  node records.mjs new-run <任务编号>',
             '  node records.mjs open-run <任务编号>',
+            '  node records.mjs plan-inquiry <本次目录>',
             '  node records.mjs checkpoint <本次目录> <input.json>',
             '  node records.mjs event <本次目录> <event.json>',
             `  node records.mjs recent <型号> [天数=${SETTINGS.dedupeDays}]`,
@@ -962,7 +1014,7 @@ try {
     }
     };
     // init 自持生命周期锁；其余写入口只校验当前版，不自动清理。
-    if (['install-helpers', 'new-run', 'open-run', 'skip', 'manual', 'beat', 'merge', 'finish', 'checkpoint', 'event'].includes(cmd)) {
+    if (['install-helpers', 'new-run', 'open-run', 'skip', 'manual', 'beat', 'merge', 'finish', 'checkpoint', 'event', 'plan-inquiry'].includes(cmd)) {
         withCurrentData(() => { store.recoverPending(); execute(); }, { waitMs: 5000 });
     } else if (['check', 'erp-items'].includes(cmd)) {
         withCurrentData(() => { store.noPending(); execute(); }, { waitMs: 5000 });

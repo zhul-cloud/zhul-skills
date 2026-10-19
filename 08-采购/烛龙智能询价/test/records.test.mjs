@@ -991,6 +991,9 @@ test('controlled archive corrections A to B to A stay current while adjacent and
         const current = read(dir);
         f.json('checkpoint', dir, input({ runId: current.runId, eventId: `setup-${++serial}`, actor: 'main', scope: 'run', expectedRevision: current.revision,
             event: { eventType: 'task.read', phase: 'task' }, snapshot: { ...facts(current), taskId: 1, items: [{ itemId: 11, model: 'MODEL-A' }], platforms: ['淘宝'] } }));
+        // 此用例验证历史已完成报价的更正归档，首发事实作为既有数据导入，不再模拟未经意图的新发送。
+        writeFileSync(join(dir, 'run-淘宝.json'), JSON.stringify({ ...part('淘宝'), runId: current.runId, status: 'completed',
+            shops: [shop({ sentAt: at, quotes: [] })] }));
         return dir;
     };
     const archivePrice = (dir, price) => {
