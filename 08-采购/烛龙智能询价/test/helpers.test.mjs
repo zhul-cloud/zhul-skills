@@ -95,8 +95,22 @@ test('ERP keeps its published predecessor hash for migration without trusting un
     const key = '_erp/erpApi';
     assert.ok(officialHashes[key].includes('e662e6634773133cd9c8cf38d4d685f9a14719b1164e593533da689ef81fd7ec'));
     assert.ok(officialHashes[key].includes('7b1ecfc8471b4b92d499c4b6bd52ba4749940fad08a5e30515d5838886002bd3'));
+    assert.ok(officialHashes[key].includes('4f8b5e6bb391aefedbb78f0f01911a12136ee72518d2675fd678198f9a519484'));
     assert.equal(compareSource(key, helperSource(key, erp).source, erp).status, 'current');
     assert.equal(compareSource(key, 'unknown customized ERP', erp).status, 'unknown');
+});
+
+test('1688 unscoped preview predecessor is recognized while unknown changes remain preserved', () => {
+    const key = 'air.1688.com/imPreviews';
+    const current = helperSource(key).source;
+    const previous = current.replace("const found = [...f.contentDocument.querySelectorAll('.conversation-item')]\n        .map((row) => row.querySelector('.content')).filter((e) => e && nameOf(e) === k.trim());",
+        "const found = [...f.contentDocument.querySelectorAll('.content')].filter((e) => nameOf(e) === k.trim());");
+    assert.notEqual(previous, current);
+    const compared = compareSource(key, previous);
+    assert.equal(compared.actualSha256, '2f42c0cea2c96af096eb68cdb3c28189337e42ab5d7f1f46c62e833584d806b7');
+    assert.equal(compared.status, 'known-official-older');
+    assert.equal(compared.action, 'sync');
+    assert.equal(compareSource(key, current.replace('const res =', '// custom\n  const res =')).action, 'preserve');
 });
 
 test('淘宝 keeps the fixed-wait published predecessor hash when updating its reader', () => {

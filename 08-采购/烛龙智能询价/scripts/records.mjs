@@ -332,12 +332,26 @@ function newRun(taskCode, json = false) {
 function recent(model, days = SETTINGS.dedupeDays) {
     const since = Date.now() - Number(days) * 86400000;
     const key = normModel(model);
-    const latest = new Map();
-    for (const r of readJsonl(RECORDS)) {
-        if (normModel(r.model) === key) latest.set(JSON.stringify([r.platform, r.shop, key]), r);
+    const perRun = new Map();
+    for (const [index, row] of readJsonl(RECORDS).entries()) {
+        if (normModel(row.model) === key) perRun.set(JSON.stringify([row.runId, row.platform, row.shop, String(row.itemId)]), { row, index });
     }
-    // 先取最新更正再检查原报价时间，避免旧价格复活或沿用报价刷新去重窗口。
-    const hits = [...latest.values()].filter((r) => Date.parse(r.time) >= since);
+    // 先按每个 run/型号取最后纠正，不能按时间排序复活同 run 已撤销的旧价。
+    const latest = new Map();
+    for (const candidate of perRun.values()) {
+        const time = Date.parse(candidate.row.time);
+        if (!Number.isFinite(time)) continue;
+        const shopKey = JSON.stringify([candidate.row.platform, candidate.row.shop, key]);
+        const previous = latest.get(shopKey);
+        const recordedAt = Date.parse(candidate.row.recordedAt);
+        const rank = [time, Number.isFinite(recordedAt) ? recordedAt : -Infinity, candidate.index];
+        if (!previous || rank[0] > previous.rank[0] || rank[0] === previous.rank[0]
+            && (rank[1] > previous.rank[1] || rank[1] === previous.rank[1] && rank[2] > previous.rank[2])) {
+            latest.set(shopKey, { row: candidate.row, rank });
+        }
+    }
+    // 跨 run 按业务时间择新后再检查窗口，旧 run 的迟归档不遮蔽新询价。
+    const hits = [...latest.values()].map(({ row }) => row).filter((r) => Date.parse(r.time) >= since);
     console.log(JSON.stringify(hits, null, 2));
 }
 
@@ -752,13 +766,28 @@ function finish(runPath) {
     const run = loadRun(runPath);
     if (simulated(run)) throw new Error('模拟 run 不得写入真实询价记录');
     const snapshot = createHash('sha256').update(store.stable(store.business(run))).digest('hex');
-    const archiveKey = createHash('sha256').update(run.runId + '\n' + snapshot).digest('hex');
-    const recorded = new Set(readJsonl(RECORDS).filter((r) => r.archiveKey === archiveKey).map((r) => r.archiveRow));
-    const archived = readJsonl(PROCESSED).some((r) => r.archiveKey === archiveKey);
-    if (archived) {
-        console.log(`本次快照已归档，未重复写入：${archiveKey}`);
+    const previousArchive = readJsonl(PROCESSED).filter((r) => r.runId === run.runId
+        && typeof r.archiveKey === 'string' && typeof r.snapshot === 'string').at(-1);
+    if (previousArchive?.snapshot === snapshot) {
+        console.log(`本次快照已归档，未重复写入：${previousArchive.archiveKey}`);
         return;
     }
+    // 相邻快照幂等；A→B→A 是新纠正，链上前一归档使其不会被历史 A 的行去重吞掉。
+    const archiveKey = createHash('sha256').update(run.runId + '\n' + snapshot + '\n' + (previousArchive?.archiveKey ?? '')).digest('hex');
+    const history = readJsonl(RECORDS);
+    const recorded = new Set(history.filter((r) => r.archiveKey === archiveKey).map((r) => r.archiveRow));
+    const rowKey = (r) => JSON.stringify([r.runId, r.platform, r.shop, String(r.itemId)]);
+    const latest = new Map(history.filter((r) => r.runId === run.runId).map((r) => [rowKey(r), r]));
+    // 有价行按本型号报价比较，店级共享回复/结论不能刷新其他型号旧价；无价行保留店级回复变化。
+    const factFields = ['model', 'sentAt', 'status', 'price', 'taxIncluded', 'taxRate', 'condition', 'leadTime', 'freeShipping', 'note'];
+    const rowFacts = (r) => store.stable(Object.fromEntries([
+        ...factFields, ...(r.price !== '' && r.price !== '无货' ? [] : ['firstHumanReplyAt', 'reply', 'endReason', 'stopQuestion']),
+    ].map((key) => {
+        let value = r[key] ?? null;
+        if (['price', 'taxRate'].includes(key) && (typeof value === 'number' || typeof value === 'string' && value.trim())
+            && Number.isFinite(Number(value))) value = Number(value);
+        return [key, value];
+    })));
     const modelOf = new Map(run.items.map((i) => [String(i.itemId), i.model]));
     const now = new Date().toISOString();
     const lines = [];
@@ -774,24 +803,27 @@ function finish(runPath) {
         for (const id of s.itemIds ?? (quotes.length ? [] : run.items.map((i) => i.itemId))) {
             if (!quotes.some((q) => String(q.itemId) === String(id))) quotes.push({ itemId: id });
         }
-        // 沿用的报价保留原记录时间，不按今天重新记，否则防重复窗口会被一直续上，旧报价被无限沿用
-        const time = s.reusedFrom ?? now;
         for (const q of quotes) {
             if (q.price != null && q.price !== '') quoteCount++;
             const archiveRow = lines.length;
-            lines.push(JSON.stringify({
+            const row = {
                 archiveKey, archiveRow, recordedAt: now, runId: run.runId, skillVersion: run.skillVersion,
-                time, task: run.task, platform, reusedFrom: s.reusedFrom ?? null, model: modelOf.get(String(q.itemId)) ?? '',
+                task: run.task, platform, itemId: q.itemId, reusedFrom: s.reusedFrom ?? null, model: modelOf.get(String(q.itemId)) ?? '',
                 shop: s.shop, contact: s.contact ?? '', url: s.url ?? '', status: s.status, reply: s.reply ?? '',
                 ...(s.identity != null ? { identity: s.identity } : {}),
                 price: s.status === '无货' ? '无货' : String(q.price ?? ''),
                 taxIncluded: !!q.taxIncluded, taxRate: q.taxRate ?? null,
                 condition: q.condition ?? '', leadTime: q.leadTime ?? '', freeShipping: q.freeShipping !== false, sentAt: s.sentAt ?? '',
+                firstHumanReplyAt: s.firstHumanReplyAt ?? null,
                 note: q.note ?? '',
                 endReason: s.endReason ?? '', stopQuestion: s.stopQuestion ?? null,
                 followUps: s.followUps ?? 0, followUpAt: s.followUpAt ?? null, replyAt: s.replyAt ?? null, answeredTopics: s.answeredTopics ?? [],
                 thankYou: s.thankYou ?? null, pendingMessage: s.pendingMessage ?? null,
-            }));
+            };
+            const previous = latest.get(rowKey(row));
+            // 沿用时间优先；同一 run 的同店同型号业务事实未变时也保留原时间，归档时刻另记。
+            row.time = s.reusedFrom ?? (previous && rowFacts(previous) === rowFacts(row) ? previous.time : now);
+            lines.push(JSON.stringify(row));
         }
     }
     mkdirSync(DATA_DIR, { recursive: true });

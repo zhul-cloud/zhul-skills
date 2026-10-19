@@ -36,7 +36,7 @@ chmod +x install.sh
 
 安装脚本会输出每个技能的完整链接路径。Windows 使用目录 Junction，macOS/Linux 使用软链接。安装后保留仓库原位置，不要删除它。
 
-已有旧的复制安装、不同目标链接，或 Codex 旧技能目录（Windows：`%USERPROFILE%\.codex\skills\`；macOS/Linux：`$HOME/.codex/skills/`）中的同一技能时，先把旧副本或链接移到所有技能搜索目录以外备份，再运行安装脚本；脚本不删除或覆盖冲突目录。询价旧名迁移另见[手册安装说明](08-采购/烛龙智能询价/使用手册.md#3-安装)。
+已有旧的复制安装、不同目标链接，或 Codex 旧技能目录（Windows：`%USERPROFILE%\.codex\skills\`；macOS/Linux：`$HOME/.codex/skills/`）中的同一技能时，先把旧副本或链接移到所有技能搜索目录以外备份，再运行安装脚本；脚本不删除或覆盖冲突目录。
 
 若 PowerShell 提示禁止运行 `.ps1` 脚本，可在**当前窗口**执行 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned` 后重试；窗口关闭后失效。电脑受组织策略管理时，联系管理员处理。
 

@@ -42,16 +42,11 @@
   if (typeof itemId !== 'string' || !/^\d+$/.test(itemId) || typeof model !== 'string' || !model.trim()) return { ok: false, error: 'SKILL_INPUT' };
   const url = new URL(location.href);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return { ok: false, error: 'PRODUCT_IDENTITY' };
-  if (url.hostname === 'huodong.taobao.com' && url.pathname === '/wow/z/app/default/safe-access-tips') return { ok: false, error: 'PRODUCT_ACCESS_RESTRICTED' };
+  if (url.hostname === 'huodong.taobao.com' && url.pathname === '/wow/z/app/default/safe-access-tips') return { ok: false, error: 'PRODUCT_PAGE_UNAVAILABLE' };
   if (url.hostname === 'login.taobao.com' && url.pathname === '/havanaone/login/login.htm') return { ok: false, error: 'PRODUCT_LOGIN_REQUIRED' };
   if (!['item.taobao.com', 'detail.tmall.com'].includes(url.hostname) || url.pathname !== '/item.htm' || url.searchParams.get('id') !== itemId) return { ok: false, error: 'PRODUCT_IDENTITY' };
   const pageText = document.body?.innerText;
   if (typeof pageText !== 'string' || !pageText.trim()) return { ok: false, error: 'PRODUCT_PAGE_UNCONFIRMED' };
-  const riskText = pageText.replace(/\s/g, '');
-  const abnormalAccess = riskText.includes('系统检测到当前访问存在异常');
-  const recoveryNotice = riskText.includes('商品详情页将在一段时间后自动恢复');
-  if (abnormalAccess && recoveryNotice) return { ok: false, error: 'PRODUCT_ACCESS_RESTRICTED' };
-  if (abnormalAccess || recoveryNotice) return { ok: false, error: 'PRODUCT_PAGE_UNCONFIRMED' };
   const visible = (e) => e.getClientRects().length > 0;
   if ([...document.querySelectorAll('.nc_scale,.nc_wrapper,[role=slider],[class*=captcha]')].some(visible)) return { ok: false, error: 'VISIBLE_VERIFICATION' };
   const titles = [...document.querySelectorAll('div[class^="ItemTitle--"]')].filter(visible).map((e) => e.innerText.split('\n')[0].trim());
@@ -68,7 +63,7 @@
 }
 ```
 
-`PRODUCT_ACCESS_RESTRICTED` 表示已知访问限制，按[暂停与恢复](../references/execution.md#暂停与恢复)的优先中断规则处理；`PRODUCT_LOGIN_REQUIRED` 先按同节登录人助处理，不继续下一商品。片段只识别已知限制 URL 及当前正确商品页可见正文的两条提示组合；仅出现其中一条也返回 `PRODUCT_PAGE_UNCONFIRMED`，须现场核验，不能当作正常页。此检测不保证覆盖所有样式、frame 或本任务其他页面；昵称、完整 SKU 或本次字段读取成功都不能单独证明风险已解除，仍须现场核验当前页与本任务关联风险页。
+`PRODUCT_PAGE_UNAVAILABLE` 表示已跳到提示页，原商品详情当前不可读；按[逐项检查](../references/execution.md#访问限制与逐项检查)确认实际受阻范围。`PRODUCT_LOGIN_REQUIRED` 按同节登录人助处理，不继续下一商品。正确商品页的风险提示文本、`pcResistDetail` / `pcIdentityRisk` 标记本身不使片段失败；原型号 SKU、商品与店铺字段可核且没有实际登录、验证或操作阻塞时，继续原询价流程。片段成功仅证明本次字段读取，仍须核当前店铺/会话身份及下一必要操作就绪；不要求其他关联风险提示页消失，不以换商品或反复刷新探测恢复。
 
 缺 SKU、标题、唯一店铺或可核页面正文时不能成功选店；按当前页实际就绪状态诊断，缺字段本身不等于账号或访问限制。若未触发平台阻塞且可安全继续，保留未确认结果并按共同规则核其他候选，不把失败算无货或已完成覆盖。URL 的商品 ID 对应不单独证明旧 DOM 已更新，须核实当前商品与店铺入口对应，已有商家身份按下文具名来源交叉核对。验证命中按暂停与恢复分流；未命中这些 DOM 结构也不能排除验证，不固定等待或反复刷新。片段没有改价格/发货排序、店铺去重或发送守卫。
 
@@ -96,7 +91,7 @@
 - **只看预览不会把消息标为已读**，未读红点会一直留着。读到回复后，必须点开该会话一次。
 - 会话列表显示店名，聊天对象可能是客服子账号。平台记录的 `shops[].contact` 记会话列表上显示的名字，按[记录协议](../references/run-protocol.md#受控保存与事件)保存后由主代理合并。
 - 聊天 helper 的字符串 `key` / `keys` 必须是本任务完整列表名。已核实标题别名时，打开函数可传 `{ contact: "完整列表名", headerName: "已核实标题身份" }`；不接受空名，零匹配/多匹配或标题不符不读取消息。当前选择器须在真实页面核验；`CHAT_DOM` / `CHAT_MESSAGES_UNAVAILABLE` 等失败不表示无回复，转按当前快照核对目标区域，不能退回整页截取。
-- 打开读取以页面变化触发核验：唯一 active 的非空会话 ID 必须与所有当前消息的 `conversationCode` 一致。当前适配仅从消息 DOM 的有限 React Fiber 链读取这一绑定；有 alternate 消息时也须一致，不读取全局会话存储。全部归属通过后，还检查消息是否有精确的「暂不支持的消息类型」占位节点；富消息可能稍后才显示机器人内容或客服评价，不能把占位当作完整正文。标题先切、旧消息残留、无消息、绑定缺失、冲突或富消息尚未渲染时继续等页面更新，最多 2200ms；到时返回 `timedOut:true` 及 `CHAT_IDENTITY`、`CHAT_MESSAGES_UNAVAILABLE`、`CHAT_BINDING_UNAVAILABLE`、`CHAT_MESSAGE_IDENTITY` 或 `CHAT_MESSAGES_RENDERING`，iframe 不可用为 `CHAT_DOM`。这些错误只表示未安全读到目标消息，不能当作店家无回复、无货或没有结束信号；转人工定位目标区域，不降低归属及完整性核验。这里的等待只用于页面就绪，店家回复等待仍按业务规则和本次有效设置计时。
+- 打开读取以页面变化触发核验：唯一 active 的非空会话 ID 必须与所有当前消息的 `conversationCode` 一致。当前适配仅从消息 DOM 的有限 React Fiber 链读取这一绑定；有 alternate 消息时也须一致，不读取全局会话存储。全部归属通过后，还检查消息是否有精确的「暂不支持的消息类型」占位节点；富消息可能稍后才显示机器人内容或客服评价，不能把占位当作完整正文。标题先切、旧消息残留、无消息、绑定缺失、冲突或富消息尚未渲染时继续等页面更新，最多 2200ms；到时返回 `timedOut:true` 及 `CHAT_IDENTITY`、`CHAT_MESSAGES_UNAVAILABLE`、`CHAT_BINDING_UNAVAILABLE`、`CHAT_MESSAGE_IDENTITY` 或 `CHAT_MESSAGES_RENDERING`，iframe 不可用为 `CHAT_DOM`。这些错误只表示未安全读到目标消息，不能当作店家无回复、无货或没有结束信号；按[暂停与恢复](../references/execution.md#暂停与恢复)诊断实际受阻范围并分流，仅适用的人助场景才转人工，不降低归属及完整性核验，也不退回整页截取。这里的等待只用于页面就绪，店家回复等待仍按业务规则和本次有效设置计时。
 - 读整页文字时会带出账号的其他私人会话预览：只解析目标店铺的会话，其他内容不解析、不记录。
 
 ### 机器人回复

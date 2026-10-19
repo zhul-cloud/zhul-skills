@@ -35,7 +35,7 @@ function productEnvironment(platform, options = {}) {
         getClientRects: () => visible ? [{}] : [],
     });
     const title = '全新 MODEL-A-01 原装';
-    const shop = Object.assign(node('匿名设备有限公司\n评分4.8\n平均8小时发货'), { href: `https://anonymous-shop.${platform === 'taobao' ? 'taobao' : '1688'}.com/?tracking=anonymous`, closest: () => node('匿名设备有限公司\n评级AAA\n平均8小时发货') });
+    const shop = Object.assign(node('匿名设备有限公司\n评分4.8\n平均8小时发货'), { href: options.shopUrl ?? `https://anonymous-shop.${platform === 'taobao' ? 'taobao' : '1688'}.com/?tracking=anonymous`, closest: () => node('匿名设备有限公司\n评级AAA\n平均8小时发货') });
     if (platform === '1688') Object.defineProperty(shop, 'innerText', { get() { counts.reads++; return '匿名设备有限公司'; } });
     const nodes = {
         title: (options.titles || [title]).map((text) => node(text)),
@@ -98,9 +98,9 @@ test('淘宝同文可见标题重复可读，异文标题歧义拒绝', () => {
     assert.equal(productEnvironment('taobao', { titles: ['MODEL-A-01', 'MODEL-B-01'] }).read().error, 'PRODUCT_FIELDS_UNAVAILABLE');
 });
 
-test('淘宝已知限制或登录URL先拒绝，不读页面正文或商品字段', () => {
+test('淘宝实际提示页或登录URL不能作为目标商品，不读页面正文或商品字段', () => {
     for (const [href, error] of [
-        ['https://huodong.taobao.com/wow/z/app/default/safe-access-tips?token=synthetic-secret', 'PRODUCT_ACCESS_RESTRICTED'],
+        ['https://huodong.taobao.com/wow/z/app/default/safe-access-tips?token=synthetic-secret', 'PRODUCT_PAGE_UNAVAILABLE'],
         ['https://login.taobao.com/havanaone/login/login.htm?redirect=synthetic-secret', 'PRODUCT_LOGIN_REQUIRED'],
     ]) {
         const env = productEnvironment('taobao', { href, forbidBody: true });
@@ -109,20 +109,34 @@ test('淘宝已知限制或登录URL先拒绝，不读页面正文或商品字�
     }
 });
 
-test('淘宝商品页完整SKU不能掩盖已知可见访问限制组合，优先于验证与字段读取', () => {
-    const env = productEnvironment('taobao', { challenge: true,
-        bodyText: '系统检测到当前访问存在异常\n恢复正常访问方式后，商品详情页将在一段时间后自动恢复' });
-    assert.deepEqual(env.read(), { ok: false, error: 'PRODUCT_ACCESS_RESTRICTED' });
-    assert.deepEqual(env.counts, { reads: 0, bodyReads: 1, queries: 0 });
+const riskNotice = '系统检测到当前访问存在异常\n恢复正常访问方式后，商品详情页将在一段时间后自动恢复';
+test('淘宝风险提示不妨碍必要商品字段完整的正常读取', () => {
+    for (const bodyText of [riskNotice, '系统检测到当前访问存在异常', '商品详情页将在一段时间后自动恢复',
+        '商品异常处理说明，恢复正常后使用', '图文详情暂不可用，pcResistDetail pcIdentityRisk']) {
+        const out = productEnvironment('taobao', { bodyText }).read();
+        assert.equal(out.ok, true);
+        assert.deepEqual(out.exactSku, ['MODEL-A-01']);
+        assert.equal(out.shopName, '匿名设备有限公司');
+    }
 });
 
-test('淘宝普通异常描述可读，单条已知强风险提示保留未确认而不放行', () => {
-    assert.equal(productEnvironment('taobao', { bodyText: '商品异常处理说明，恢复正常后使用' }).read().ok, true);
-    for (const bodyText of ['系统检测到当前访问存在异常', '商品详情页将在一段时间后自动恢复']) {
-        const env = productEnvironment('taobao', { bodyText });
-        assert.deepEqual(env.read(), { ok: false, error: 'PRODUCT_PAGE_UNCONFIRMED' });
-        assert.deepEqual(env.counts, { reads: 0, bodyReads: 1, queries: 0 });
+test('淘宝独立风险标记不改变正确商品的可读性', () => {
+    for (const marker of ['pcResistDetail', 'pcIdentityRisk']) {
+        const env = productEnvironment('taobao', { href: `https://item.taobao.com/item.htm?id=10001&${marker}=true` });
+        assert.equal(env.read().ok, true);
     }
+});
+
+test('淘宝风险提示不能掩盖验证码、缺必要字段或错误型号', () => {
+    const env = productEnvironment('taobao', { challenge: true, bodyText: riskNotice });
+    assert.deepEqual(env.read(), { ok: false, error: 'VISIBLE_VERIFICATION' });
+    assert.deepEqual(env.counts, { reads: 0, bodyReads: 1, queries: 1 });
+    for (const options of [{ sku: [] }, { titles: [] }, { duplicateShop: true }, { shopUrl: 'https://example.invalid/' },
+        { titles: [], sku: [], bodyText: '发生错误，请稍后重试' }]) {
+        assert.equal(productEnvironment('taobao', { bodyText: riskNotice, ...options }).read().error, 'PRODUCT_FIELDS_UNAVAILABLE');
+    }
+    assert.equal(productEnvironment('taobao', { bodyText: riskNotice, sku: ['MODEL-A-010'] }).read().error, 'PRODUCT_MODEL_UNCONFIRMED');
+    assert.equal(productEnvironment('taobao', { bodyText: riskNotice }).read({ itemId: '10002', model: 'MODEL-A-01' }).error, 'PRODUCT_IDENTITY');
 });
 
 test('淘宝错商品/未知页及无法核页面正文保持失败，不读取错页或秘密', () => {

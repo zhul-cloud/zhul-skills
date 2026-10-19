@@ -56,14 +56,14 @@ function makeEnv(state) {
     }
     if (method === 'PUT') {
       state.lastPut = JSON.parse(opts.body);
-      if (state.putApplyThenError) {
+      if (state.putApplyThenError || state.applyWrites) {
         for (const item of state.lastPut.items) {
           const target = state.detail.items.find((i) => i.id === item.itemId);
           const status = state.lastPut.submit ? (state.detail.reviewRequired ? 3 : 2) : 1;
           target.quotes = item.noStock ? [q({ id: 9000 + item.itemId, status, noStock: true, unitPrice: undefined, note: item.noStockNote })]
             : item.quotes.map((value, i) => ({ ...value, id: 9000 + i, status, attachments: value.attachmentIds.map((id) => ({ id })) }));
         }
-        throw new Error('mock response lost after server applied PUT');
+        if (state.putApplyThenError) throw new Error('mock response lost after server applied PUT');
       }
       return reply(200, state.putReply || { code: 0, message: 'ok' });
     }
@@ -641,6 +641,39 @@ await t('ERP已有报价可选null保持兼容', { detail: baseDetail([q({ taxIn
   { op: 'save', taskId: 1, submit: false, items: fresh },
   (o, s) => o.ok && s.lastPut.items[0].quotes.find((x) => x.shopName === '店A').taxIncluded === false
     && s.lastPut.items[0].quotes.find((x) => x.shopName === '店A').freeShipping === true);
+
+// 同店纠正沿完整生产顺序执行：部分草稿、最终完整草稿、正式提交，每次核对后仅合并已写型号基线。
+for (const review of [false, true]) {
+  const state = { detail: baseDetail([q({ id: 701, shopName: '店B', unitPrice: 90, supplierId: 88,
+    recommended: true, attachments: [{ id: 101 }] })], [], review), applyWrites: true };
+  const env = makeEnv(state);
+  let baseline = (await readSnapshot(state.detail)).snapshot;
+  const stages = [];
+  for (const submit of [false, false, true]) {
+    const saved = await erpApi(env.browser, 1, { op: 'save', taskId: 1, submit, items: fresh, expectedSnapshot: baseline });
+    const written = state.lastPut?.items[0].quotes[0];
+    const verified = await erpApi(env.browser, 1, { op: 'verify', taskId: 1, submitted: submit, items: fresh, expectedSnapshot: baseline });
+    stages.push(saved.ok && verified.ok && written?.supplierId === 88
+      && JSON.stringify(written?.attachmentIds) === '[101]' && (review ? !Object.hasOwn(written, 'recommended') : written.recommended === true));
+    const quote = state.detail.items[0].quotes[0];
+    const supplier = quote.supplierId;
+    quote.supplierId = undefined;
+    const missingSupplier = await erpApi(env.browser, 1, { op: 'verify', taskId: 1, submitted: submit, items: fresh, expectedSnapshot: baseline });
+    stages.push(!missingSupplier.ok && missingSupplier.mismatches?.some((m) => m.problem.includes('供应商')));
+    quote.supplierId = supplier;
+    if (!review) {
+      quote.recommended = false;
+      const missingRecommendation = await erpApi(env.browser, 1, { op: 'verify', taskId: 1, submitted: submit, items: fresh, expectedSnapshot: baseline });
+      stages.push(!missingRecommendation.ok && missingRecommendation.mismatches?.some((m) => m.problem.includes('原推荐标记')));
+      quote.recommended = true;
+    }
+    if (!verified.ok) break;
+    for (const id of verified.verifiedItemIds) baseline.items[baseline.items.findIndex((i) => i.itemId === id)] = verified.snapshot.items.find((i) => i.itemId === id);
+  }
+  results.push({ name: `同店更新完整草稿/提交链保留供应商、附件及${review ? '审核流不携推荐' : '非审核流原推荐'}，核对拒绝丢字段`,
+    pass: stages.length === (review ? 6 : 9) && stages.every(Boolean) && env.calls.filter((c) => c.method === 'PUT').length === 3,
+    out: JSON.stringify({ stages, lastPut: state.lastPut }) });
+}
 
 for (const r of results) console.log(`${r.pass ? 'PASS' : 'FAIL'}  ${r.name}${r.pass ? '' : '\n      ' + r.out + '\n      put=' + r.put}`);
 const passed = results.filter((r) => r.pass).length;
