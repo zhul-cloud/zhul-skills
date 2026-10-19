@@ -13,7 +13,8 @@ const HELPERS = fileURLToPath(new URL('../helpers/', import.meta.url));
 // 按 sourceKey 信任完整内容，不信名称/注释/版本标记。改动已发布 helper 时追加被替换版本的适配源码 hash。
 // 包含电商及 ERP helper 被替换的已发布完整适配源码；同一业务源码覆盖其已发布版本，不收录未发布失败候选。
 export const officialHashes = {
-    '_erp/erpApi': ['e662e6634773133cd9c8cf38d4d685f9a14719b1164e593533da689ef81fd7ec',
+    '_erp/erpApi': ['82dbb5415d19d4efb4896800d2f1daffd92c07cd6b390e7914ba1dd488158c7e',
+        'e662e6634773133cd9c8cf38d4d685f9a14719b1164e593533da689ef81fd7ec',
         'f51329c2401ac59366a36abafed957acb7a144c3e97c8b70e2bc7f11187b5776',
         '3d2739343e2bb000225f224b2c73aa60803075d629c0c2e65cd2442c49e8a66b',
         '7b1ecfc8471b4b92d499c4b6bd52ba4749940fad08a5e30515d5838886002bd3',

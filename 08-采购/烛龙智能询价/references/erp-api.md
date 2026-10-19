@@ -73,10 +73,14 @@
    - 提交后用相同原 payload 调 `{ op: "verify", taskId, submitted: true, items, skipItemIds, expectedSnapshot }`，使用本次正式 PUT 前的原基线。核对包含保留报价和自动带入的其他型号草稿。只有 ok 且 mismatches 为空才确认本次实际写入范围，写 `submitted: true`、真实 stages.submitted 和 attempt.confirmed；需要审核账号的待审核也算本次提交成功。将 `inDoneList`、`filledCount` / `itemCount` 保存为任务汇总观察，不参与 helper 的 ok 判定：不能因仍在待处理、已填数不等于本次提交数或未满型号数判失败，也不能由汇总判成功。部分提交、skip 或 locked 型号可能使任务继续待处理；列表反映整个任务状态，本人已填数还可包含草稿、待审核、作废报价，不能等同已提交数或任务完成数。
    - 任何已发 PUT 或发送状态未知的尝试（pending/unknown/failed/confirmed）都不能再次 submit；请求中断、结果未知记 unknown，只用原 payload 只读 verify。仅 helper 明确返回 writeAttempted:false（确实未进入 PUT）时可记 state:not_sent；修复后用原 payload 重试，调用前再写 pending。错误名、登录恢复或推断均不能代替未发证据；ERP_BIZ 也必须区分 GET 与 PUT 阶段。明确失败/差异转人工，不把未知结果称为未提交草稿。
 
+核对实际 ERP 单价时只接受非负有限数值；`null`、缺值或字符串不能当作零价，真实 `0` 仍可核对通过。本地 payload 的合法数字字符串仍按原规则转为数值。含税税率按实际启用字典的原值精确核对，不四舍五入；新询价仍按现有 3%/13% 规则，实际启用字典中已有的其他合法税率（如 1%）仅原样保留和核对。
+
+草稿及提交都会在合并本次新价、保留行和自动带入草稿后检查原值。未被合法新报价替换的旧单价不是非负有限数值（含空值/缺值/负数），或旧含税税率不在实际启用字典时，返回 `ERP_CONTRACT` 并明确未 PUT；保留原 ERP 数据、转人工核对，不让执行者修改本地报价凑值。已有明确授权的同店合法纠正仍可按原协议替换坏旧值，并保留被替换版本的附件、供应商及原推荐边界。
+
 ### ERP 错误与重试边界
 
 7. `erpApi` 返回错误时：
-   - `ERP_CONTRACT`：缺字段、类型变了、取值不认识或接口不存在时，立即停止 ERP 调用，不提交、不猜字段；独立平台可完成本地结果，本轮不取下一 IQ；告诉用户「ERP 接口已修改，烛龙智能询价没有同步，请更新技能」，把 `problems` 写进汇报和实跑报告。只有新增的 `extraFields` 可继续并记录；本节第 8 条记录收尾照常执行，已收集的报价列在汇报里。
+   - `ERP_CONTRACT`：缺字段、类型变了、原 ERP 数据取值不符合已核字典或接口不存在时，立即停止 ERP 调用，不提交、不猜字段；独立平台可完成本地结果，本轮不取下一 IQ；按具体 `problems`/`hint` 告知用户是 ERP 原数据不符还是接口合同变化；原数据问题转人工核对，接口变化由维护者同步技能，把差异写进汇报和实跑报告。只有新增的 `extraFields` 可继续并记录；本节第 8 条记录收尾照常执行，已收集的报价列在汇报里。
    - `ERP_LOGIN`：按 [人助协议](execution.md#暂停与恢复)请求 ERP 登录；owned 目标页、唯一 owner、20 分钟总时限和两次核验失败边界同平台人助。仅暂停写回，其他平台继续保存本地结果。取消、超时或两次失败后本轮不取下一 IQ、不自动重试写回。
    - `ERP_CONFLICT`：持久化基线与当前实际写入范围不符，helper 不 PUT；停止写回，保留本地报价和差异，核对并保留人工改动或取得明确变更授权。不得用刚读的新 snapshot 静默覆盖旧 baseline。
    - `ERP_BIZ`（ERP 拒绝内容）和 `SKILL_INPUT`（本地取值错误）：只有本次 save 明确 `writeAttempted:false` 且无先前已发/未知写入时可纠错重试；草稿可改正 run.json 并重新生成 items/skipItemIds，同错最多改两次，正式提交须记 not_sent 并用原 payload 重试。已发或结果未知的 save（含草稿）只用原 payload 和原基线 verify，差异转人工，不纠错重放。
