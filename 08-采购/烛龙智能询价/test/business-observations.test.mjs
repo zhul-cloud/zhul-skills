@@ -131,6 +131,35 @@ test('淘宝竖线SKU拒绝右段型号、型号前后缀、多型号段及含�
     }
 });
 
+test('淘宝独立SKU可读取原型号空白后明确电流/直流电压规格，符合需求仍须另核', () => {
+    for (const sku of ['LC1D09BD DC24V', 'LC1D09BD 9A DC24V', 'LC1D09BD DC24V 9A', 'LC1D09BD 9.5A DC24.5V', 'LC1D09BD DC220V']) {
+        const result = productEnvironment('taobao', { sku: [sku] }).read({ itemId: '10001', model: 'LC1D09BD' });
+        assert.equal(result.ok, true); assert.deepEqual(result.exactSku, [sku]);
+        assert.equal(result.specifications, undefined, '可读型号不能自动确认实际规格符合任务');
+    }
+    const fullModel = 'MODEL A/01-B';
+    assert.equal(productEnvironment('taobao', { sku: [`${fullModel} DC24V`] }).read({ itemId: '10001', model: fullModel }).ok, true, '不能按首个空白截断ERP原型号');
+});
+
+test('淘宝空白规格尾部不放行错后缀、多型号、未知词、缺单位或重复冲突规格', () => {
+    for (const sku of ['LC1D09BDC DC24V', 'LC1D09BDX DC24V', 'XLC1D09BD DC24V', 'LC1D09BDDC24V',
+        'LC1D09BD LC1D12BD DC24V', 'LC1D09BD DC24V LC1D12BD', 'LC1D09BD 待确认', 'LC1D09BD 询客服',
+        'LC1D09BD DC24V 原装', 'LC1D09BD 9 DC24', 'LC1D09BD 9A 24', 'LC1D09BD 9A 10A',
+        'LC1D09BD DC24V DC24V', 'LC1D09BD DC24V DC220V', 'LC1D09BD 9A DC24V 10A']) {
+        assert.equal(productEnvironment('taobao', { sku: [sku] }).read({ itemId: '10001', model: 'LC1D09BD' }).error, 'PRODUCT_MODEL_UNCONFIRMED', sku);
+    }
+});
+
+test('淘宝独立SKU支持明确有序电流区间且不把区间混成额外型号或描述', () => {
+    const result = productEnvironment('taobao', { sku: ['LRD12 5.5-8A'] }).read({ itemId: '10001', model: 'LRD12' });
+    assert.equal(result.ok, true); assert.deepEqual(result.exactSku, ['LRD12 5.5-8A']);
+    for (const sku of ['LRD12C 5.5-8A', 'LRD12 8-5.5A', 'LRD12 -8A', 'LRD12 5.5-A', 'LRD12 5.5-8',
+        'LRD12 5.5A-8A', 'LRD12 5.5V-8A', 'LRD12 5.5–8A', 'LRD12 5.5-8A 6-9A',
+        'LRD12 5.5-8A 8A', 'LRD12 5.5-8A LRD16', 'LRD12 5.5-8A 待确认']) {
+        assert.equal(productEnvironment('taobao', { sku: [sku] }).read({ itemId: '10001', model: 'LRD12' }).error, 'PRODUCT_MODEL_UNCONFIRMED', sku);
+    }
+});
+
 test('淘宝实际提示页或登录URL不能作为目标商品，不读页面正文或商品字段', () => {
     for (const [href, error] of [
         ['https://huodong.taobao.com/wow/z/app/default/safe-access-tips?token=synthetic-secret', 'PRODUCT_PAGE_UNAVAILABLE'],

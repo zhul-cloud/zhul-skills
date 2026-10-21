@@ -34,7 +34,7 @@
 
 ### 商品详情一次读取
 
-当前任务商品页已就绪且归属明确后，在同一次 `page.evaluate` 中执行下面函数，参数 `{ itemId, model }` 均来自本任务已核候选和原型号。只读标题、独立 SKU 和店铺头部评分/发货原文，避免逐字段快照；相同标题可有重复可见节点，不能把用户评价里的标题算入。独立 SKU 可为纯型号，或「完整原型号 | 非空规格说明」两段，型号段逐字匹配，`exactSku` 保留完整原文；不从标题或模糊描述补型号，不移除后缀或连字符。返回字段不是最终规格或商家身份结论，后续核对仍按[共同挑店规则](../references/inquiry-rules.md#找店与挑店)。
+当前任务商品页已就绪且归属明确后，在同一次 `page.evaluate` 中执行下面函数，参数 `{ itemId, model }` 均来自本任务已核候选和原型号。只读标题、独立 SKU 和店铺头部评分/发货原文，避免逐字段快照；相同标题可有重复可见节点，不能把用户评价里的标题算入。独立 SKU 可为纯型号、「完整原型号 | 非空规格说明」两段，或完整原型号后以空白分隔的电流/直流电压规格（如 `9A DC24V`、`5.5-8A`）。空白尾部仅接受数字加 `A`、两个数字以 ASCII 连字符分隔并以 `A` 结尾的有序电流区间，或 `DC` 加数字加 `V`；电流/区间与电压各最多一个，支持小数且全部内容须符合此格式。不接受未知词、第二型号、缺单位、反向区间或重复规格。型号段逐字匹配，`exactSku` 保留完整原文；不从标题或模糊描述补型号，不移除后缀或连字符。成功读取 `DC220V` 也不表示符合任务的 `24VDC`；返回字段不是最终规格或商家身份结论，后续核对仍按[共同挑店规则](../references/inquiry-rules.md#找店与挑店)。
 
 ```js
 ({ itemId, model }) => {
@@ -59,8 +59,18 @@
   if (!shopName || !['http:', 'https:'].includes(shopUrl.protocol) || shopUrl.username || shopUrl.password || !/(^|\.)(taobao|tmall)\.com$/.test(shopUrl.hostname)) return { ok: false, error: 'PRODUCT_FIELDS_UNAVAILABLE' };
   const exactSku = sku.filter((s) => {
     const parts = s.split('|');
-    return parts.length === 1 ? s.replace(/\s/g, '') === model
-      : parts.length === 2 && parts[0].trim() === model && !!parts[1].trim();
+    if (parts.length === 2) return parts[0].trim() === model && !!parts[1].trim();
+    if (parts.length !== 1) return false;
+    if (s.replace(/\s/g, '') === model) return true;
+    if (!s.startsWith(model) || !/^\s/.test(s.slice(model.length))) return false;
+    const tokens = s.slice(model.length).trim().split(/\s+/);
+    const currents = tokens.filter(token => {
+      const range = token.match(/^(\d+(?:\.\d+)?)(?:-(\d+(?:\.\d+)?))?A$/);
+      return !!range && Number.isFinite(Number(range[1])) && (range[2] === undefined
+        || Number.isFinite(Number(range[2])) && Number(range[1]) <= Number(range[2]));
+    }).length;
+    const voltages = tokens.filter(token => /^DC\d+(?:\.\d+)?V$/.test(token)).length;
+    return tokens.length <= 2 && currents <= 1 && voltages <= 1 && currents + voltages === tokens.length;
   });
   return { ok: exactSku.length > 0, ...(exactSku.length ? {} : { error: 'PRODUCT_MODEL_UNCONFIRMED' }), itemId, title: titles[0], exactSku,
     shopName, shopUrl: shopUrl.origin + shopUrl.pathname, shopHeader: shop.innerText.trim() };
