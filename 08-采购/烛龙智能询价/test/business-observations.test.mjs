@@ -83,6 +83,15 @@ function productEnvironment(platform, options = {}) {
 }
 
 for (const platform of ['taobao', '1688']) {
+    test(`${platform}纯SKU保留ERP原型号内部空格，仍拒绝错型号或被删空格的型号`, () => {
+        const model = 'MODEL A/01-B', input = { itemId: '10001', model };
+        const result = productEnvironment(platform, { sku: [model] }).read(input);
+        assert.equal(result.ok, true); assert.deepEqual(result.exactSku, [model]);
+        for (const sku of ['MODELA/01-B', 'MODEL B/01-B', 'MODEL A/01-BX', 'XMODEL A/01-B']) {
+            assert.equal(productEnvironment(platform, { sku: [sku] }).read(input).ok, false, sku);
+        }
+        assert.equal(productEnvironment(platform, { sku: [' MODEL- A-01 '] }).read().ok, true, '无内部空格的原型号仍兼容页面格式空白');
+    });
     test(`${platform}详情片段一次读取独立型号与店铺原文，不产生业务操作`, () => {
         const env = productEnvironment(platform);
         const result = env.read();
@@ -120,6 +129,17 @@ test('淘宝独立SKU允许精确型号与竖线规格两段并保留完整原�
     for (const href of ['https://item.taobao.com/item.htm?id=10001', 'https://detail.tmall.com/item.htm?id=10001']) {
         const result = productEnvironment('taobao', { href, sku: ['MODEL-A-010 | 24V 3.2A', source, 'MODEL-B-01 | 12V 6A'] }).read();
         assert.equal(result.ok, true); assert.deepEqual(result.exactSku, [source]);
+    }
+});
+
+test('淘宝带内部空格的完整原型号兼容竖线规格，错型号不被规格尾部放行', () => {
+    const model = 'MODEL A/01-B', input = { itemId: '10001', model };
+    for (const sku of [model + ' | 24V 3.2A', model + ' 9A DC24V']) {
+        const result = productEnvironment('taobao', { sku: [sku] }).read(input);
+        assert.equal(result.ok, true); assert.deepEqual(result.exactSku, [sku]);
+    }
+    for (const sku of ['MODELA/01-B | 24V', model + 'X DC24V', model + ' OTHER']) {
+        assert.equal(productEnvironment('taobao', { sku: [sku] }).read(input).ok, false, sku);
     }
 });
 
@@ -231,6 +251,16 @@ test('1688独立SKU表按唯一型号列读取同行规格，保留原文并兼�
     assert.deepEqual(result.skuRows, [[{ label: '型号', value: 'MODEL-A-01' }, { label: '极数', value: '3P' }, { label: '辅助触点形式', value: '1NO1NC' }, { label: '线圈额定电压', value: 'DC24V' }, { label: '额定电流', value: '9A' }]]);
     const reordered = productEnvironment('1688', { sku: [], tables: [{ headers: ['额定电流', '型号', '线圈额定电压'], rows: [['9', 'MODEL-A-01', '24']] }] }).read();
     assert.equal(reordered.ok, true); assert.deepEqual(reordered.skuRows[0], [{ label: '额定电流', value: '9' }, { label: '型号', value: 'MODEL-A-01' }, { label: '线圈额定电压', value: '24' }]);
+});
+
+test('1688表格型号列支持原型号内部空格并保留同行规格，仍拒绝错型号', () => {
+    const model = 'MODEL A/01-B', input = { itemId: '10001', model };
+    const read = sku => productEnvironment('1688', { sku: [], tables: [{ headers: ['型号', '规格'], rows: [[sku, 'DC24V']] }] }).read(input);
+    const result = read(model);
+    assert.equal(result.ok, true); assert.deepEqual(result.exactSku, [model]);
+    assert.deepEqual(result.skuRows[0], [{ label: '型号', value: model }, { label: '规格', value: 'DC24V' }]);
+    for (const sku of ['MODELA/01-B', 'MODEL B/01-B', model + 'X', model + ' DC24V']) assert.equal(read(sku).ok, false, sku);
+    assert.equal(productEnvironment('1688', { sku: [], tables: [{ headers: ['型号'], rows: [['MODEL- A-01']] }] }).read().ok, true);
 });
 
 test('1688 SKU表拒绝其他列/描述/较长后缀命中及旧独立选项冲突', () => {

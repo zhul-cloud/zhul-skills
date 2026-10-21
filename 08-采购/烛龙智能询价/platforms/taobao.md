@@ -4,9 +4,11 @@
 
 | 站点 | 脚本 | 作用 |
 |---|---|---|
-| s.taobao.com | `helpers["zhul_taobao_searchCandidates"](browser, pageId, { items: [{ itemId, model }], mode: "current-dom" })` | 当前 DOM 的直达商品候选；每项 `legacy` 为 `[排名, 商品ID, 标价, 付款人数, 型号匹配, 疑似非全新, 广告]`，另带独立 `title`、`productUrl` 及逐明细 `matchItemIds` 提示 |
+| s.taobao.com | `helpers["zhul_taobao_searchCandidates"](browser, pageId, { items: [{ itemId, model }], mode: "current-dom" })` | 当前 DOM 的直达商品候选；每项 `legacy` 为 `[排名, 商品ID, 标价, 付款人数显示值换算, 型号匹配, 疑似非全新, 广告]`，另带独立 `title`、`productUrl` 及逐明细 `matchItemIds` 提示 |
 | market.m.taobao.com | `helpers["zhul_taobao_imPreviews"](browser, pageId, keys)` | 按完整列表名精确且唯一匹配的会话预览，不点开；不以预览文字匹配店铺 |
 | market.m.taobao.com | `helpers["zhul_taobao_imOpenAndRead"](browser, pageId, key)` | 按完整列表名唯一打开，核对 active、标题、每条消息归属及富消息就绪后读取末尾最多 1500 字符；未就绪最多等 2200ms，缺可信绑定安全失败 |
+
+付款人数按页面显示的数值换算，如 `2万` 为 `20000`、`1.2万` 为 `12000`；万位显示是约数，带 `+` 表示下界，不代表精确成交人数。
 
 ## 1 登录
 
@@ -33,6 +35,8 @@
 8. 用 `browser.open` 打开商品页时可能多出重复标签；按[共享浏览器归属与清理规则](../references/execution.md#共享浏览器)记录并核实。
 
 ### 商品详情一次读取
+
+参数和返回值中的 `itemId` 是已核候选 `legacy[1]` 的电商商品 ID 数字串，对应 `searchCoverage.products[].productId`，不是 ERP 明细 `items[].itemId`；`model` 仍用当前 ERP 明细的原型号。保存覆盖证据时，`matches[].itemId` 使用对应 ERP 明细 ID。
 
 当前任务商品页已就绪且归属明确后，在同一次 `page.evaluate` 中执行下面函数，参数 `{ itemId, model }` 均来自本任务已核候选和原型号。只读标题、独立 SKU 和店铺头部评分/发货原文，避免逐字段快照；相同标题可有重复可见节点，不能把用户评价里的标题算入。独立 SKU 可为纯型号、「完整原型号 | 非空规格说明」两段，或完整原型号后以空白分隔的电流/直流电压规格（如 `9A DC24V`、`5.5-8A`）。空白尾部仅接受数字加 `A`、两个数字以 ASCII 连字符分隔并以 `A` 结尾的有序电流区间，或 `DC` 加数字加 `V`；电流/区间与电压各最多一个，支持小数且全部内容须符合此格式。不接受未知词、第二型号、缺单位、反向区间或重复规格。型号段逐字匹配，`exactSku` 保留完整原文；不从标题或模糊描述补型号，不移除后缀或连字符。成功读取 `DC220V` 也不表示符合任务的 `24VDC`；返回字段不是最终规格或商家身份结论，后续核对仍按[共同挑店规则](../references/inquiry-rules.md#找店与挑店)。
 
@@ -61,7 +65,7 @@
     const parts = s.split('|');
     if (parts.length === 2) return parts[0].trim() === model && !!parts[1].trim();
     if (parts.length !== 1) return false;
-    if (s.replace(/\s/g, '') === model) return true;
+    if (s === model || s.replace(/\s/g, '') === model) return true;
     if (!s.startsWith(model) || !/^\s/.test(s.slice(model.length))) return false;
     const tokens = s.slice(model.length).trim().split(/\s+/);
     const currents = tokens.filter(token => {

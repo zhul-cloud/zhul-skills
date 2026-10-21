@@ -32,7 +32,8 @@ export const officialHashes = {
     's.1688.com/searchCandidates': ['ab2292014203c470bd0907dd3ad6da1c64e6f000c12b3fcfb69ec65cbb236c25',
         'caf4e50921472230841d302f543f44db1a6735da93f4cca31ee70f807ed6bf98'],
     's.taobao.com/searchCandidates': ['07e29d432e2ba797c987ebcddf3e3dc97fb83ad3376c16740ee070554197e6b3',
-        'f7f4a7f7b772523cef0734398245fcafb014c35de02bd8b083d5f45ccc7f45a1'],
+        'f7f4a7f7b772523cef0734398245fcafb014c35de02bd8b083d5f45ccc7f45a1',
+        '1aaaed6ef48ca247e0363fbbe20b2cef90c60d5f0269149cfd8631c4514c2749'],
 };
 const hash = (source) => createHash('sha256').update(source).digest('hex');
 

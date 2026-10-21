@@ -162,6 +162,20 @@ test('batch coverage upgrades retain the exact previously published complete sea
     }
 });
 
+test('淘宝 payment-count repair recognizes its exact published predecessor and preserves local customization', () => {
+    const key = 's.taobao.com/searchCandidates', current = helperSource(key).source;
+    const previous = current
+        .replace('const paid = t.match(/(\\d+(?:\\.\\d+)?)\\s*(万)?\\s*\\+?\\s*人付款/);\n      const paidCount = paid ? Number(paid[1]) * (paid[2] ? 10000 : 1) : 0;',
+            "const paidRaw = (t.match(/([\\d+万]+)人付款/) || [])[1] || '0';")
+        .replace('paidCount, norm(t)', "paidRaw.includes('万') ? 10000 : (parseInt(paidRaw, 10) || 0), norm(t)");
+    assert.notEqual(previous, current);
+    const result = compareSource(key, previous);
+    assert.equal(result.actualSha256, '1aaaed6ef48ca247e0363fbbe20b2cef90c60d5f0269149cfd8631c4514c2749');
+    assert.ok(officialHashes[key].includes(result.actualSha256));
+    assert.equal(result.status, 'known-official-older'); assert.equal(result.action, 'sync');
+    assert.equal(compareSource(key, current.replace('const paid =', '// custom payment parsing\n      const paid =')).action, 'preserve');
+});
+
 test('extraction accepts CRLF and fails closed on missing/duplicate blocks or changed signature', () => {
     const source = 'async (browser, pageId, req) => { return req; }';
     assert.equal(extractSource(`before\r\n\`\`\`js\r\n${source}\r\n\`\`\`\r\nafter`), source);
