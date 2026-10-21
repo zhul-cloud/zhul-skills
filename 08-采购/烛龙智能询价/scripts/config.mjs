@@ -12,8 +12,8 @@ export const USER_SETTINGS_PATH = join(DATA_DIR, 'settings.json');
 
 export const fields = {
     confirmBeforeSend: ['boolean', '发询价前是否先请用户确认店铺与话术'],
-    'shopsPerLink.min': ['positiveInteger', '每条货源链接至少询问的店数；建议 1–5'],
-    'shopsPerLink.max': ['positiveInteger', '每条货源链接最多询问的店数；建议 1–5'],
+    'shopsPerItem.min': ['positiveInteger', '每个ERP明细在每个平台的最低店数；建议 1–5'],
+    'shopsPerItem.max': ['positiveInteger', '每个ERP明细在每个平台的目标/最多店数；建议 1–5'],
     firstHumanReplyMinutes: ['nonnegativeNumber', '等待首次人工回复的分钟数；0 表示即时结束'],
     followUpReplyMinutes: ['nonnegativeNumber', '追问或答复后等待的分钟数；0 表示即时结束'],
     'pollIntervalSeconds.min': ['positiveNumber', '查看回复的最短秒数；建议不低于 10'],
@@ -73,7 +73,7 @@ export function validate(settings) {
         }
     }
     checkKeys(settings);
-    for (const key of ['shopsPerLink', 'pollIntervalSeconds', 'subagents', 'subagents.claude', 'subagents.codex']) {
+    for (const key of ['shopsPerItem', 'pollIntervalSeconds', 'subagents', 'subagents.claude', 'subagents.codex']) {
         if (!object(get(settings, key))) fail(key, '必须是对象');
     }
     const efforts = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
@@ -96,7 +96,7 @@ export function validate(settings) {
         }
         if (!valid) fail(key, reason);
     }
-    for (const key of ['shopsPerLink', 'pollIntervalSeconds']) {
+    for (const key of ['shopsPerItem', 'pollIntervalSeconds']) {
         if (settings[key].min > settings[key].max) fail(key, 'min 不能大于 max');
     }
 }
@@ -141,11 +141,21 @@ function optionalText(path) {
     }
 }
 
+// 只规范化保留的个人旧键；发布默认值和set/reset仍只接受新键。只读调用不改盘。
+export function normalizePersonalSettings(value) {
+    if (!object(value) || !Object.hasOwn(value, 'shopsPerLink')) return value;
+    if (Object.hasOwn(value, 'shopsPerItem')) fail('shopsPerItem', '与旧个人键 shopsPerLink 并存，请明确保留哪一项');
+    const next = structuredClone(value);
+    next.shopsPerItem = next.shopsPerLink;
+    delete next.shopsPerLink;
+    return next;
+}
+
 export function readSettings({ validateEffective = true } = {}) {
     const defaults = parseJson(readText(DEFAULTS_PATH, DEFAULTS_PATH), DEFAULTS_PATH);
     validateAt(defaults, DEFAULTS_PATH);
     const originalText = optionalText(USER_SETTINGS_PATH);
-    const overrides = originalText === null ? {} : parseJson(originalText, USER_SETTINGS_PATH);
+    const overrides = originalText === null ? {} : normalizePersonalSettings(parseJson(originalText, USER_SETTINGS_PATH));
     labeled(USER_SETTINGS_PATH, () => checkPaths(overrides));
     const settings = merge(defaults, overrides);
     if (validateEffective) validateAt(settings, USER_SETTINGS_PATH);

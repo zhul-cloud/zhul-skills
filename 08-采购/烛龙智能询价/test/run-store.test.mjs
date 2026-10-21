@@ -460,3 +460,114 @@ test('background watch reports current stopAfterTask and exits clearly when a pe
     const blocked = await f.background(['watch', dir], pendingHook).done;
     assert.notEqual(blocked.status, 0); assert.match(blocked.stderr, /RUN_RECOVERY_REQUIRED/); assert.equal(blocked.stdout, '');
 });
+
+
+test('platform checkpoint validates coverage run binding, current quota and merged itemIds before writing', t => {
+    const f = fixture(t), dir = f.bind(), run = f.read(dir);
+    const snapshot = { runId: run.runId, platform: '淘宝', shopsPerItem: { min: 2, max: 2 }, products: [] };
+    const input = f.platformInput(dir, '淘宝', { searchCoverage: snapshot });
+    f.json('checkpoint', dir, f.input(input));
+    const path = join(dir, 'run-淘宝.json');
+    const before = readFileSync(path, 'utf8');
+    for (const change of [{ runId: 'other-run' }, { platform: '1688' }, { shopsPerItem: { min: 1, max: 1 } }]) {
+        const next = f.platformInput(dir, '淘宝', { searchCoverage: { ...snapshot, ...change } }); next.expectedRevision = 1;
+        const result = f.cli(['checkpoint', dir, f.input(next)]);
+        assert.notEqual(result.status, 0); assert.match(result.stderr, /SEARCH_COVERAGE/);
+        assert.equal(readFileSync(path, 'utf8'), before);
+    }
+});
+
+
+test('coverage checkpoint preserves a pending initial intent and accepts explicit cancellation of the same unsent message', t => {
+    const f = fixture(t), dir = f.bind(), run = f.read(dir);
+    const coverage = { runId: run.runId, platform: '淘宝', shopsPerItem: { min: 2, max: 2 }, products: [] };
+    const pendingMessage = { messageId: 'coverage-unsent', kind: 'initial', text: '原询价', preparedAt: now(), state: 'pending' };
+    const existing = { shop: '原待核店', itemIds: [11], status: '未回复', quotes: [], pendingMessage };
+    let req = f.platformInput(dir, '淘宝', { searchCoverage: coverage, shops: [existing] });
+    req.event = { eventType: 'message.intent', phase: 'messaging', itemIds: [11], shop: existing.shop, messageId: pendingMessage.messageId, messageKind: 'initial' };
+    f.json('checkpoint', dir, f.input(req));
+    const prior = JSON.parse(readFileSync(join(dir, 'run-淘宝.json')));
+    const cancelled = structuredClone(existing); cancelled.pendingMessage.state = 'cancelled';
+    req = f.platformInput(dir, '淘宝', { searchCoverage: coverage, shops: [cancelled] }); req.expectedRevision = prior.revision;
+    req.event = { eventType: 'message.cancelled', phase: 'messaging', itemIds: [11], shop: existing.shop, messageId: pendingMessage.messageId, messageKind: 'initial' };
+    f.json('checkpoint', dir, f.input(req));
+    const saved = JSON.parse(readFileSync(join(dir, 'run-淘宝.json')));
+    assert.equal(saved.shops[0].pendingMessage.state, 'cancelled');
+    assert.equal(saved.shops[0].sentAt, undefined); assert.deepEqual(saved.shops[0].itemIds, [11]);
+});
+
+
+test('platform checkpoint cannot remove enabled coverage to add an unverified merchant', t => {
+    const f = fixture(t), dir = f.bind(), run = f.read(dir);
+    const searchCoverage = { runId: run.runId, platform: '淘宝', shopsPerItem: { min: 2, max: 2 }, products: [] };
+    f.json('checkpoint', dir, f.input(f.platformInput(dir, '淘宝', { searchCoverage })));
+    const path = join(dir, 'run-淘宝.json'), before = readFileSync(path, 'utf8');
+    const req = f.platformInput(dir, '淘宝', { shops: [{ shop: '未核店', itemIds: [11], status: '未回复', quotes: [] }] }); req.expectedRevision = 1;
+    const result = f.cli(['checkpoint', dir, f.input(req)]);
+    assert.notEqual(result.status, 0); assert.match(result.stderr, /不能删除/);
+    assert.equal(readFileSync(path, 'utf8'), before);
+});
+
+
+test('quota changes leave completed platforms mergeable while unfinished checkpoints require the new effective target', t => {
+    const f = fixture(t), dir = f.bind(), run = f.read(dir);
+    const searchCoverage = { runId: run.runId, platform: '淘宝', shopsPerItem: { min: 2, max: 2 }, products: [] };
+    const finished = f.platformInput(dir, '淘宝', { status: 'completed', stages: { repliesDone: now() }, searchCoverage });
+    f.json('checkpoint', dir, f.input(finished));
+    writeFileSync(join(f.data, 'settings.json'), JSON.stringify({ shopsPerItem: { min: 3, max: 3 } }));
+    f.ok('check', dir, '淘宝'); f.ok('merge', dir, '--partial', '淘宝');
+    assert.deepEqual(f.open('IQ-OBS').completedPlatforms, ['淘宝']);
+    const snapshot = JSON.parse(readFileSync(join(dir, 'run-淘宝.json')));
+    const stillFinished = f.platformInput(dir, '淘宝', facts(snapshot)); stillFinished.expectedRevision = snapshot.revision;
+    f.json('checkpoint', dir, f.input(stillFinished));
+    const unfinished = f.platformInput(dir, '1688', { searchCoverage: { ...searchCoverage, platform: '1688' } });
+    assert.match(f.cli(['checkpoint', dir, f.input(unfinished)]).stderr, /本次配置/);
+});
+
+
+test('same-name merchants with explicit different sellerIds checkpoint and preserve their own itemIds', t => {
+    const f = fixture(t), dir = f.bind(), run = f.read(dir), at = now();
+    const products = run.items.map((item, index) => ({ productId: String(index + 1), productUrl: `https://item.taobao.com/item.htm?id=${index + 1}`,
+        skuState: 'same', verifiedAt: at, eligible: true,
+        merchant: { idKind: 'sellerId', id: String(index + 1), name: '同名店', sourceUrl: 'https://shop.taobao.com/shop/view_shop.htm', verifiedAt: at },
+        matches: [{ itemId: item.itemId, model: item.model, quantity: item.quantity, unit: item.unit, description: item.description,
+            skuState: 'same', exactModel: true, suffix: true, specifications: true, verifiedAt: at }] }));
+    const shops = run.items.map((item, index) => ({ shop: '同名店', merchantKey: 'id:sellerId:' + (index + 1), itemIds: [item.itemId], status: '未回复', sentAt: at, quotes: [] }));
+    const searchCoverage = { runId: run.runId, platform: '淘宝', shopsPerItem: { min: 2, max: 2 }, products };
+    const req = f.platformInput(dir, '淘宝', { searchCoverage, shops });
+    f.json('checkpoint', dir, f.input(req));
+    const before = JSON.parse(readFileSync(join(dir, 'run-淘宝.json')));
+    const next = f.platformInput(dir, '淘宝', { searchCoverage, shops: [...shops].reverse() }); next.expectedRevision = before.revision;
+    f.json('checkpoint', dir, f.input(next));
+    f.ok('check', dir, '淘宝', '--partial');
+});
+
+
+test('message checkpoints uniquely bind the second historical same-name merchant by messageId and kind', t => {
+    const f = fixture(t), dir = f.bind(), run = f.read(dir), at = now();
+    const products = run.items.map((item, index) => ({ productId: String(index + 1), productUrl: `https://item.taobao.com/item.htm?id=${index + 1}`,
+        skuState: 'same', verifiedAt: at, eligible: true,
+        merchant: { idKind: 'sellerId', id: String(index + 1), name: '同名店', sourceUrl: 'https://shop.taobao.com/shop/view_shop.htm', verifiedAt: at },
+        matches: [{ itemId: item.itemId, model: item.model, quantity: item.quantity, unit: item.unit, description: item.description,
+            skuState: 'same', exactModel: true, suffix: true, specifications: true, verifiedAt: at }] }));
+    const shops = run.items.map((item, index) => ({ shop: '同名店', merchantKey: 'id:sellerId:' + (index + 1), itemIds: [item.itemId], status: '未回复', sentAt: at, quotes: [] }));
+    const searchCoverage = { runId: run.runId, platform: '淘宝', shopsPerItem: { min: 2, max: 2 }, products };
+    f.json('checkpoint', dir, f.input(f.platformInput(dir, '淘宝', { searchCoverage, shops })));
+    shops[1].pendingMessage = { messageId: 'second-merchant-follow-up', kind: 'followUp', text: '是现货吗？', preparedAt: at, state: 'pending' };
+    const intent = f.platformInput(dir, '淘宝', { searchCoverage, shops }); intent.expectedRevision = 1;
+    intent.event = { eventType: 'message.intent', phase: 'messaging', itemIds: [22], shop: '同名店', messageId: 'second-merchant-follow-up', messageKind: 'followUp' };
+    f.json('checkpoint', dir, f.input(intent));
+    shops[1].pendingMessage.state = 'confirmed'; shops[1].pendingMessage.confirmedAt = at; shops[1].followUps = 1; shops[1].followUpAt = at;
+    const confirm = f.platformInput(dir, '淘宝', { searchCoverage, shops }); confirm.expectedRevision = 2;
+    confirm.event = { ...intent.event, eventType: 'message.confirmed' };
+    f.json('checkpoint', dir, f.input(confirm));
+    const saved = JSON.parse(readFileSync(join(dir, 'run-淘宝.json')));
+    assert.equal(saved.shops[0].pendingMessage, undefined);
+    assert.equal(saved.shops[1].pendingMessage.state, 'confirmed'); assert.deepEqual(saved.shops[1].itemIds, [22]);
+    const missing = f.platformInput(dir, '淘宝', { searchCoverage, shops }); missing.expectedRevision = 3;
+    missing.event = { ...intent.event, messageId: 'not-present' };
+    assert.match(f.cli(['checkpoint', dir, f.input(missing)]).stderr, /唯一对应/);
+    shops[0].pendingMessage = { ...shops[1].pendingMessage, state: 'pending' }; shops[1].pendingMessage.state = 'pending';
+    const ambiguous = f.platformInput(dir, '淘宝', { searchCoverage, shops }); ambiguous.expectedRevision = 3; ambiguous.event = intent.event;
+    assert.match(f.cli(['checkpoint', dir, f.input(ambiguous)]).stderr, /唯一对应/);
+});

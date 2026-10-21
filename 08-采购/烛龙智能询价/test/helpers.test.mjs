@@ -133,6 +133,16 @@ test('search evidence upgrades retain both published legacy hashes and preserve 
     }
 });
 
+test('batch coverage upgrades retain the exact previously published complete search helper hashes', () => {
+    for (const [key, hash] of [
+        ['s.taobao.com/searchCandidates', '07e29d432e2ba797c987ebcddf3e3dc97fb83ad3376c16740ee070554197e6b3'],
+        ['s.1688.com/searchCandidates', 'ab2292014203c470bd0907dd3ad6da1c64e6f000c12b3fcfb69ec65cbb236c25'],
+    ]) {
+        assert.ok(officialHashes[key].includes(hash));
+        assert.notEqual(helperSource(key).sha256, hash);
+    }
+});
+
 test('extraction accepts CRLF and fails closed on missing/duplicate blocks or changed signature', () => {
     const source = 'async (browser, pageId, req) => { return req; }';
     assert.equal(extractSource(`before\r\n\`\`\`js\r\n${source}\r\n\`\`\`\r\nafter`), source);
