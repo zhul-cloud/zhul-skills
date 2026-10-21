@@ -15,6 +15,18 @@ export function strategy(value) {
         || s.initialShopsPerPlatform > s.maxShopsPerPlatform) fail('inquiryStrategy 需要正整数且首轮数不超过累计上限');
     return Object.fromEntries(['initialShopsPerPlatform', 'targetComparableQuotes', 'maxShopsPerPlatform'].map(k => [k, s[k]]));
 }
+function validateInquiryPlan(run) {
+    if (run.inquiryPlan === undefined) return;
+    const p = run.inquiryPlan;
+    if (!object(p) || !Array.isArray(p.targets)) fail('主计划轮次、来源修订及逐item/平台累计授权无效');
+    const policy = strategy(p.policy);
+    const expected = run.items.flatMap(i => run.platforms.map(platform => `${String(i.itemId)}|${platform}`));
+    const keys = p.targets.map(t => `${String(t?.itemId)}|${t?.platform}`);
+    if (!Number.isSafeInteger(p.round) || p.round < 1 || !time(p.plannedAt) || !object(p.basedOn)
+        || run.platforms.some(platform => !Number.isSafeInteger(p.basedOn[platform]) || p.basedOn[platform] < 0)
+        || keys.length !== expected.length || new Set(keys).size !== keys.length || expected.some(key => !keys.includes(key))
+        || p.targets.some(t => !Number.isSafeInteger(t.totalShops) || t.totalShops < 0 || t.totalShops > policy.maxShopsPerPlatform)) fail('主计划轮次、来源修订及逐item/平台累计授权无效');
+}
 const fixedShop = s => !!(s.sentAt || s.reusedFrom || s.endedAt || s.pendingMessage && s.pendingMessage.state !== 'cancelled');
 function identityKey(shop) {
     const b = shop.identity?.businessIdentity;
@@ -50,14 +62,15 @@ export function planCoverage(run, part, effectiveSettings) {
     const c = part?.searchCoverage;
     if (!object(c) || !text(run?.runId) || c.runId !== run.runId || c.platform !== part.platform
         || !['淘宝', '1688'].includes(part.platform) || !run.platforms?.includes(part.platform)) fail('缺少本 run/平台绑定的 searchCoverage');
+    const items = run.items;
+    if (!Array.isArray(items) || !items.length || items.some(i => i.itemId == null || !String(i.itemId).trim() || !text(i.model))
+        || new Set(items.map(i => String(i.itemId))).size !== items.length) fail('items 需要独立 itemId 和原型号');
+    validateInquiryPlan(run);
     strategy(c.inquiryStrategy);
     const policy = strategy(run.inquiryPlan?.policy ?? c.inquiryStrategy);
     const settings = effectiveSettings?.settings ?? effectiveSettings;
     if (settings && JSON.stringify(strategy(settings)) !== JSON.stringify(policy)) fail('本次配置与平台快照 inquiryStrategy 不一致');
-    const target = id => run.inquiryPlan?.targets?.find(t => t.platform === part.platform && sameId(t.itemId, id))?.totalShops ?? policy.initialShopsPerPlatform;
-    const items = run.items;
-    if (!Array.isArray(items) || !items.length || items.some(i => i.itemId == null || !String(i.itemId).trim() || !text(i.model))
-        || new Set(items.map(i => String(i.itemId))).size !== items.length) fail('items 需要独立 itemId 和原型号');
+    const target = id => run.inquiryPlan?.targets.find(t => t.platform === part.platform && sameId(t.itemId, id)).totalShops ?? policy.initialShopsPerPlatform;
     if (!Array.isArray(c.products) || !Array.isArray(part.shops ?? [])) fail('products/shops 必须为数组');
     const byId = new Map(items.map(i => [String(i.itemId), i]));
     const nameIds = new Map();
@@ -282,15 +295,8 @@ export function inquiryFactProblems(run, part) {
 
 // 只读地汇总最新平台事实；选中、已联系、有效、等待和授权空位分别展示。
 export function inquirySummary(run, parts, policyInput, now = Date.now()) {
+    validateInquiryPlan(run);
     const policy = strategy(policyInput ?? run.inquiryPlan?.policy);
-    if (run.inquiryPlan) {
-        const p = run.inquiryPlan, expected = run.items.flatMap(i => run.platforms.map(platform => `${String(i.itemId)}|${platform}`));
-        const keys = (p.targets ?? []).map(t => `${String(t?.itemId)}|${t?.platform}`);
-        if (!Number.isSafeInteger(p.round) || p.round < 1 || !time(p.plannedAt) || !object(p.basedOn)
-            || run.platforms.some(platform => !Number.isSafeInteger(p.basedOn[platform]) || p.basedOn[platform] < 0)
-            || keys.length !== expected.length || new Set(keys).size !== keys.length || expected.some(key => !keys.includes(key))
-            || p.targets.some(t => !Number.isSafeInteger(t.totalShops) || t.totalShops < 0 || t.totalShops > strategy(p.policy).maxShopsPerPlatform)) fail('主计划轮次、来源修订及逐item/平台累计授权无效');
-    }
     const entities = new Map();
     const coveragePlans = new Map(parts.filter(p => p?.searchCoverage?.inquiryStrategy
         && (p.shops ?? []).some(s => !contacted(s) && !s.endedAt && s.pendingMessage?.state !== 'cancelled')).map(p => [p.platform, planCoverage(run, p)]));

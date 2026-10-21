@@ -15,7 +15,7 @@ Call it:
 
 `helpers["zhul_taobao_searchCandidates"](browser, pageId, { items: [{ itemId, model }], mode: "current-dom" })`
 
-批量调用一次返回当前 DOM 候选及独立标题、直达商品 URL，`matchItemIds` 仅表示逐明细文本匹配提示；同型号不同 `itemId` 仍分别保留。结果不表示整页已加载、详情合格或已确认库存。筛选、复用及覆盖边界见 [淘宝平台说明](../../platforms/taobao.md#2-搜索)。
+批量调用一次返回当前 DOM 候选及独立标题、直达商品 URL，`matchItemIds` 仅表示逐明细文本匹配提示；同型号不同 `itemId` 仍分别保留。`legacy[3]` 按付款人数显示值换算，`2万` / `1.2万` 分别为 `20000` / `12000`；万位显示为约数，带 `+` 为下界，不冒称精确人数。结果不表示整页已加载、详情合格或已确认库存。筛选、复用及覆盖边界见 [淘宝平台说明](../../platforms/taobao.md#2-搜索)。
 
 ```js
 async (browser, pageId, input) => {
@@ -70,9 +70,10 @@ async (browser, pageId, input) => {
       while (card.parentElement) { const ids = new Set([...card.parentElement.querySelectorAll(sel)].map(x => idOf(x.href))); if (ids.size > 1) break; card = card.parentElement; }
       seen.add(id);
       const t = card.innerText.replace(/\s+/g, ' ');
-      const paidRaw = (t.match(/([\d+万]+)人付款/) || [])[1] || '0';
+      const paid = t.match(/(\d+(?:\.\d+)?)\s*(万)?\s*\+?\s*人付款/);
+      const paidCount = paid ? Number(paid[1]) * (paid[2] ? 10000 : 1) : 0;
       const variant = parts.length >= 2 && norm(t).includes(norm(parts[0])) && t.toUpperCase().includes(parts[1].toUpperCase());
-      out.push([out.length + 1, id, parseFloat(((t.match(/¥\s*([\d.]+)/) || [])[1]) || '0'), paidRaw.includes('万') ? 10000 : (parseInt(paidRaw, 10) || 0), norm(t).includes(key) || variant ? 1 : 0, /基本全新|二手|拆机|翻新|99新|九成新/.test(t) ? 1 : 0, /广告|掌柜热卖/.test(t) ? 1 : 0]);
+      out.push([out.length + 1, id, parseFloat(((t.match(/¥\s*([\d.]+)/) || [])[1]) || '0'), paidCount, norm(t).includes(key) || variant ? 1 : 0, /基本全新|二手|拆机|翻新|99新|九成新/.test(t) ? 1 : 0, /广告|掌柜热卖/.test(t) ? 1 : 0]);
       if (detailed) {
         const titles = card.querySelectorAll('[class*="title--"]');
         const title = titles.length === 1 ? titles[0].textContent.trim().replace(/\s+/g, ' ') || null : null;

@@ -12,6 +12,16 @@ const policy = { initialShopsPerPlatform: 2, targetComparableQuotes: 3, maxShops
 const run = (target = 2) => ({ runId: 'coverage-run', platforms: ['淘宝', '1688'], items: structuredClone(items),
     inquiryPlan: { policy, round: 1, plannedAt: at, basedOn: { '淘宝': 0, '1688': 0 }, targets: items.flatMap(i => ['淘宝', '1688'].map(platform => ({ itemId: i.itemId, platform, totalShops: target }))) } });
 const part = (products = [], platform = '淘宝') => ({ platform, shops: [], searchCoverage: { runId: 'coverage-run', platform, inquiryStrategy: policy, products } });
+const invalidPlans = [
+    p => { delete p.targets; }, p => { p.targets = null; }, p => { p.targets = {}; },
+    p => { p.targets = []; }, p => { p.targets.pop(); }, p => { p.targets.push(p.targets[0]); },
+    p => { p.targets[1] = { ...p.targets[0] }; }, p => { p.targets[0].itemId = 999; },
+    p => { p.targets[0].platform = 'unknown'; }, p => { p.targets[0].totalShops = -1; },
+    p => { p.targets[0].totalShops = 1.5; }, p => { p.targets[0].totalShops = 5; },
+    p => { p.targets[0].totalShops = '2'; }, p => { p.targets[0].totalShops = null; },
+    p => { p.round = 0; }, p => { p.plannedAt = 'invalid'; }, p => { delete p.basedOn['1688']; },
+    p => { p.basedOn['淘宝'] = -1; }, p => { p.policy.maxShopsPerPlatform = 0; },
+];
 function product(id, merchant, ids = [11, 12, 22], platform = '淘宝', extra = {}) {
     return { productId: String(id), productUrl: platform === '淘宝' ? `https://item.taobao.com/item.htm?id=${id}` : `https://detail.1688.com/offer/${id}.html`,
         skuState: 'selected-SKU', verifiedAt: at, eligible: true,
@@ -81,6 +91,27 @@ test('the current main authorization sets the selection target; exhausted eviden
     assert.equal(result.stopSearch, false); assert.equal(Object.hasOwn(result, 'noStock'), false);
     const two = planCoverage(run(3), part([product(1, 'a'), product(2, 'b')]));
     assert.ok(two.coverage.every(i => !i.belowMinimum && i.missing === 1)); assert.equal(two.stopSearch, false);
+});
+
+test('coverage and summary reject any present incomplete, duplicate or invalid main authorization', () => {
+    for (const mutate of invalidPlans) {
+        const r = structuredClone(run()); mutate(r.inquiryPlan);
+        assert.throws(() => planCoverage(r, part()), /SEARCH_COVERAGE/);
+        assert.throws(() => inquirySummary(r, [], policy), /SEARCH_COVERAGE/);
+    }
+    for (const inquiryPlan of [null, false, 0, 'bad']) {
+        assert.throws(() => planCoverage({ ...run(), inquiryPlan }, part()), /SEARCH_COVERAGE/);
+    }
+});
+
+test('zero targets stop fresh selection while an absent legacy plan keeps only its read-only initial fallback', () => {
+    const p = part([product(1, 'a'), product(2, 'b')]);
+    const zero = planCoverage(run(0), p);
+    assert.ok(zero.coverage.every(i => i.target === 0 && i.count === 0 && i.missing === 0));
+    assert.deepEqual(zero.shops, []); assert.equal(zero.stopSearch, true);
+    const legacy = run(); delete legacy.inquiryPlan;
+    assert.ok(planCoverage(legacy, p).coverage.every(i => i.target === 2 && i.count === 2));
+    assert.match(inquiryCheckpointProblems(legacy, [], undefined, p, Date.parse(at)).join(), /先由主执行者 plan-inquiry/);
 });
 
 function comparable(itemId = 11, extra = {}) {
@@ -292,6 +323,29 @@ test('coverage CLI requires effective settings and returns a merged read-only pl
     assert.deepEqual(plan.shops.map(s => s.itemIds), [[11, 12, 22], [11, 12, 22]]);
     assert.deepEqual(paths.map(p => readFileSync(p, 'utf8')), before);
     assert.equal(spawnSync(process.execPath, [script, ...paths.slice(0, 2)], { encoding: 'utf8' }).status, 2);
+});
+
+test('coverage CLI refuses invalid plans without changing input and preserves zero or absent-plan semantics', t => {
+    const root = mkdtempSync(join(dirname(fileURLToPath(import.meta.url)), '.coverage-test-'));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const paths = ['run', 'part', 'settings'].map(name => join(root, name + '.json'));
+    writeFileSync(paths[1], JSON.stringify(part([product(1, 'a')])));
+    writeFileSync(paths[2], JSON.stringify({ inquiryStrategy: policy }));
+    const script = fileURLToPath(new URL('../scripts/search-coverage.mjs', import.meta.url));
+    const call = r => {
+        writeFileSync(paths[0], JSON.stringify(r)); const before = paths.map(p => readFileSync(p, 'utf8'));
+        const result = spawnSync(process.execPath, [script, ...paths], { encoding: 'utf8' });
+        assert.deepEqual(paths.map(p => readFileSync(p, 'utf8')), before); return result;
+    };
+    for (const mutate of invalidPlans) {
+        const r = structuredClone(run()); mutate(r.inquiryPlan); const result = call(r);
+        assert.equal(result.status, 2); assert.match(result.stderr, /SEARCH_COVERAGE/); assert.equal(result.stdout, '');
+    }
+    const zero = call(run(0)); assert.equal(zero.status, 0, zero.stderr);
+    assert.ok(JSON.parse(zero.stdout).coverage.every(i => i.target === 0 && i.missing === 0));
+    const legacy = run(); delete legacy.inquiryPlan;
+    const result = call(legacy); assert.equal(result.status, 0, result.stderr);
+    assert.ok(JSON.parse(result.stdout).coverage.every(i => i.target === 2));
 });
 
 

@@ -294,8 +294,17 @@ test('淘宝: repeated product anchors remain deduplicated, tracking links exclu
     const result = await env.read();
     assert.equal(result.counts.matchedAnchors, 3);
     assert.equal(result.candidates.length, 2);
-    assert.equal(result.candidates[0].legacy[3], 10000);
+    assert.equal(result.candidates[0].legacy[3], 20000);
     assert.equal(result.candidates[1].productUrl, 'https://detail.tmall.com/item.htm?id=10002');
+});
+
+test('淘宝: payment display counts preserve ordinary, decimal ten-thousand and plus lower-bound values', async () => {
+    const displays = ['2万', '1.2万', '1.5万+', '123', '123+', '0', '未知'];
+    const expected = [20000, 12000, 15000, 123, 123, 0, 0];
+    const env = environment('taobao', displays.map((paid, i) => card('taobao', String(20000 + i), { paid })));
+    const result = await env.read();
+    assert.deepEqual(result.candidates.map(c => c.legacy[3]), expected);
+    assert.deepEqual((await env.read('MODEL-A-01')).map(c => c[3]), expected);
 });
 
 for (const platform of ['taobao', '1688']) {
