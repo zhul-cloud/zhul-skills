@@ -10,6 +10,17 @@ const source = fileURLToPath(new URL('../', import.meta.url));
 const testDir = dirname(fileURLToPath(import.meta.url));
 const now = () => new Date().toISOString();
 const facts = value => Object.fromEntries(Object.entries(value).filter(([key]) => !['schemaVersion', 'runId', 'skillVersion', 'executionVersion', 'revision', 'eventSeq', 'createdAt', 'updatedAt'].includes(key)));
+const policy = { initialShopsPerPlatform: 2, targetComparableQuotes: 3, maxShopsPerPlatform: 4 };
+// 历史事实夹具直接导入；新发送的授权/意图/确认另由adaptive-inquiry覆盖真实受控链。
+const seedPart = (f, dir, platform, snapshot) => writeFileSync(join(dir, `run-${platform}.json`), JSON.stringify({ ...f.read(dir), ...snapshot, revision: 0, eventSeq: undefined }));
+function coverageFor(run, platform, shops) {
+    const at = now();
+    return { runId: run.runId, platform, inquiryStrategy: policy, products: shops.map((shop, index) => ({
+        productId: String(index + 1), productUrl: platform === '淘宝' ? `https://item.taobao.com/item.htm?id=${index + 1}` : `https://detail.1688.com/offer/${index + 1}.html`,
+        skuState: 'verified', verifiedAt: at, eligible: true, merchant: { id: shop.merchantKey?.replace('id:sellerId:', '') ?? String(index + 1), idKind: 'sellerId', name: shop.shop,
+            sourceUrl: platform === '淘宝' ? 'https://shop.taobao.com/shop/view_shop.htm' : 'https://seller.1688.com/page/index.htm', verifiedAt: at },
+        matches: shop.itemIds.map(id => ({ ...run.items.find(i => String(i.itemId) === String(id)), skuState: 'verified', exactModel: true, suffix: true, specifications: true, verifiedAt: at })) })) };
+}
 function fixture(t) {
     const root = mkdtempSync(join(testDir, '.run-store-test-')), home = join(root, 'home'), skill = join(root, 'skill');
     mkdirSync(home); mkdirSync(skill);
@@ -99,13 +110,13 @@ test('same-scope CAS rejects stale snapshot; merge invalidates stale main and pr
     const outcomes = await Promise.all([a, b].map(req => f.background(['checkpoint', dir, f.input(req)]).done));
     assert.equal(outcomes.filter(p => p.status === 0).length, 1); assert.match(outcomes.find(p => p.status !== 0).stderr, /REVISION_CONFLICT/);
     const stale = f.read(dir);
-    const p = f.platformInput(dir, '淘宝', { status: 'completed', stages: { repliesDone: now() }, shops: [{ shop: '匿名店', itemIds: [11], status: '未回复', quotes: [] }] });
+    const p = f.platformInput(dir, '淘宝', { status: 'completed', skipped: '本夹具仅验证合并互斥', stages: {} });
     f.json('checkpoint', dir, f.input(p)); f.ok('merge', dir, '--partial', '淘宝');
     const req = f.request(dir, { eventType: 'run.resumed', phase: 'recovery' }, { scope: 'run', expectedRevision: stale.revision, snapshot: facts(stale) });
     assert.match(f.cli(['checkpoint', dir, f.input(req)]).stderr, /REVISION_CONFLICT/);
     req.expectedRevision = f.read(dir).revision;
     assert.match(f.cli(['checkpoint', dir, f.input(req)]).stderr, /CHECKPOINT_OWNER/);
-    assert.equal(f.read(dir).shops.length, 1);
+    assert.equal(f.read(dir).platformStates['淘宝'], 'completed');
 });
 
 test('event schema rejects wrong model, actor/platform, timing and fabricated signal receipt', t => {
@@ -175,6 +186,7 @@ test('real killed process leaves lock and committed pending; proven-dead isolate
 test('finish business hash ignores metadata events and pending repairs all archive outputs without duplicate rows', t => {
     const f = fixture(t), dir = f.bind(), run = f.read(dir);
     const p = f.platformInput(dir, '淘宝', { status: 'completed', stages: { repliesDone: now() }, shops: [{ shop: '匿名店', itemIds: [11], sentAt: now(), status: '已回复', quotes: [{ itemId: 11, price: 100 }] }] });
+    seedPart(f, dir, '淘宝', p.snapshot);
     f.json('checkpoint', dir, f.input(p)); f.ok('merge', dir, '--partial', '淘宝');
     const injection = hook(`const old=fs.renameSync; fs.renameSync=(a,b)=>{const r=old(a,b);if(String(b)===${JSON.stringify(join(f.data, 'records.jsonl'))})throw new Error('archive-stop');return r}`);
     assert.notEqual(f.cli(['finish', join(dir, 'run.json')], injection).status, 0);
@@ -339,7 +351,11 @@ test('draft receipt unknown blocks both payload paths; confirmed requires exact 
 
 test('message checkpoint links stable ID and kind while main incidents preserve platform events', t => {
     const f = fixture(t), dir = f.bind();
+    f.json('plan-inquiry', dir);
     const req = f.platformInput(dir, '淘宝', { incidents: [{ time: now(), type: 'technical', detail: 'platform interruption' }], shops: [{ shop: '匿名店', itemIds: [11], status: '未回复', quotes: [], pendingMessage: { messageId: 'message-one', kind: 'initial', text: '测试询价', preparedAt: now(), state: 'pending' } }] });
+    req.snapshot.searchCoverage = coverageFor(f.read(dir), '淘宝', req.snapshot.shops);
+    req.snapshot.stages.shopsPicked = now();
+    req.snapshot.searchCoverage.exhaustedItems = f.read(dir).items.map(i => ({ itemId: i.itemId, reason: '本夹具候选穷尽', checkedAt: now() }));
     req.event = { eventType: 'message.intent', phase: 'messaging', itemIds: [11], shop: '匿名店', messageId: 'wrong', messageKind: 'initial' };
     assert.match(f.cli(['checkpoint', dir, f.input(req)]).stderr, /EVENT_MESSAGE/);
     req.event.messageId = 'message-one'; assert.equal(f.cli(['checkpoint', dir, f.input(req)]).status, 0);
@@ -376,6 +392,10 @@ test('wrong-recipient correction uses an incident, keeps original intent and gua
         { shop: '原目标店', itemIds: [11], status: '未回复', quotes: [], pendingMessage: original },
         { shop: '真实报价店', itemIds: [11], sentAt: now(), status: '已回复', quotes: [{ itemId: 11, price: 100 }] },
     ] };
+    snapshot.shops[1].endedAt = now();
+    snapshot.searchCoverage = coverageFor(f.read(dir), '淘宝', snapshot.shops);
+    snapshot.searchCoverage.exhaustedItems = f.read(dir).items.map(i => ({ itemId: i.itemId, reason: '本夹具已穷尽全部候选', checkedAt: now() }));
+    seedPart(f, dir, '淘宝', snapshot); f.json('plan-inquiry', dir);
     const save = (eventType, shop = correction.targetShop, message = correction.pendingMessage) => {
         const partPath = join(dir, 'run-淘宝.json'), revision = existsSync(partPath) ? JSON.parse(readFileSync(partPath)).revision : 0;
         return f.cli(['checkpoint', dir, f.input(f.request(dir, { eventType, phase: 'messaging', itemIds: [11], shop, messageId: message.messageId, messageKind: message.kind, correlationId: 'mis-send-one' }, {
@@ -423,7 +443,7 @@ test('background watch takes a short complete read lock and never reports partia
     const writerReady = join(f.root, 'writer-ready'), writerRelease = join(f.root, 'writer-release');
     const readerHook = hook(`const interval=globalThis.setInterval;globalThis.setInterval=(fn)=>interval(fn,30);const old=fs.readFileSync;let held=false;fs.readFileSync=(p,...a)=>{if(!held&&String(p)===${JSON.stringify(join(dir, 'run-淘宝.json'))}){held=true;fs.writeFileSync(${JSON.stringify(ready)},'ready');${waitRelease(release)}}return old(p,...a)}`);
     const reader = f.background(['watch', dir], readerHook); await waitFile(ready, reader.child);
-    taobao.expectedRevision = 1; taobao.eventId = 'platform-completing'; taobao.event = { eventType: 'platform.completed', phase: 'platform' }; taobao.snapshot.status = 'completed'; taobao.snapshot.stages = { repliesDone: now() };
+    taobao.expectedRevision = 1; taobao.eventId = 'platform-completing'; taobao.event = { eventType: 'platform.completed', phase: 'platform' }; taobao.snapshot.status = 'completed'; taobao.snapshot.skipped = '本夹具没有业务询价'; taobao.snapshot.stages = {};
     const writerHook = hook(`const old=fs.renameSync;fs.renameSync=(a,b)=>{const r=old(a,b);if(String(b)===${JSON.stringify(join(dir, 'run-淘宝.json'))}){fs.writeFileSync(${JSON.stringify(writerReady)},'ready');${waitRelease(writerRelease)}}return r}`);
     const writer = f.background(['checkpoint', dir, f.input(taobao)], writerHook);
     await new Promise(r => setTimeout(r, 120)); assert.equal(existsSync(writerReady), false); assert.equal(existsSync(f.pending), false);
@@ -464,12 +484,13 @@ test('background watch reports current stopAfterTask and exits clearly when a pe
 
 test('platform checkpoint validates coverage run binding, current quota and merged itemIds before writing', t => {
     const f = fixture(t), dir = f.bind(), run = f.read(dir);
-    const snapshot = { runId: run.runId, platform: '淘宝', shopsPerItem: { min: 2, max: 2 }, products: [] };
+    f.json('plan-inquiry', dir);
+    const snapshot = { runId: run.runId, platform: '淘宝', inquiryStrategy: policy, products: [] };
     const input = f.platformInput(dir, '淘宝', { searchCoverage: snapshot });
     f.json('checkpoint', dir, f.input(input));
     const path = join(dir, 'run-淘宝.json');
     const before = readFileSync(path, 'utf8');
-    for (const change of [{ runId: 'other-run' }, { platform: '1688' }, { shopsPerItem: { min: 1, max: 1 } }]) {
+    for (const change of [{ runId: 'other-run' }, { platform: '1688' }, { inquiryStrategy: { ...policy, initialShopsPerPlatform: 5 } }]) {
         const next = f.platformInput(dir, '淘宝', { searchCoverage: { ...snapshot, ...change } }); next.expectedRevision = 1;
         const result = f.cli(['checkpoint', dir, f.input(next)]);
         assert.notEqual(result.status, 0); assert.match(result.stderr, /SEARCH_COVERAGE/);
@@ -480,15 +501,17 @@ test('platform checkpoint validates coverage run binding, current quota and merg
 
 test('coverage checkpoint preserves a pending initial intent and accepts explicit cancellation of the same unsent message', t => {
     const f = fixture(t), dir = f.bind(), run = f.read(dir);
-    const coverage = { runId: run.runId, platform: '淘宝', shopsPerItem: { min: 2, max: 2 }, products: [] };
+    f.json('plan-inquiry', dir);
     const pendingMessage = { messageId: 'coverage-unsent', kind: 'initial', text: '原询价', preparedAt: now(), state: 'pending' };
     const existing = { shop: '原待核店', itemIds: [11], status: '未回复', quotes: [], pendingMessage };
-    let req = f.platformInput(dir, '淘宝', { searchCoverage: coverage, shops: [existing] });
+    const coverage = coverageFor(run, '淘宝', [existing]);
+    coverage.exhaustedItems = run.items.map(i => ({ itemId: i.itemId, reason: '本夹具候选穷尽', checkedAt: now() }));
+    let req = f.platformInput(dir, '淘宝', { searchCoverage: coverage, shops: [existing], stages: { shopsPicked: now() } });
     req.event = { eventType: 'message.intent', phase: 'messaging', itemIds: [11], shop: existing.shop, messageId: pendingMessage.messageId, messageKind: 'initial' };
     f.json('checkpoint', dir, f.input(req));
     const prior = JSON.parse(readFileSync(join(dir, 'run-淘宝.json')));
     const cancelled = structuredClone(existing); cancelled.pendingMessage.state = 'cancelled';
-    req = f.platformInput(dir, '淘宝', { searchCoverage: coverage, shops: [cancelled] }); req.expectedRevision = prior.revision;
+    req = f.platformInput(dir, '淘宝', { searchCoverage: coverage, shops: [cancelled], stages: prior.stages }); req.expectedRevision = prior.revision;
     req.event = { eventType: 'message.cancelled', phase: 'messaging', itemIds: [11], shop: existing.shop, messageId: pendingMessage.messageId, messageKind: 'initial' };
     f.json('checkpoint', dir, f.input(req));
     const saved = JSON.parse(readFileSync(join(dir, 'run-淘宝.json')));
@@ -499,7 +522,8 @@ test('coverage checkpoint preserves a pending initial intent and accepts explici
 
 test('platform checkpoint cannot remove enabled coverage to add an unverified merchant', t => {
     const f = fixture(t), dir = f.bind(), run = f.read(dir);
-    const searchCoverage = { runId: run.runId, platform: '淘宝', shopsPerItem: { min: 2, max: 2 }, products: [] };
+    f.json('plan-inquiry', dir);
+    const searchCoverage = { runId: run.runId, platform: '淘宝', inquiryStrategy: policy, products: [] };
     f.json('checkpoint', dir, f.input(f.platformInput(dir, '淘宝', { searchCoverage })));
     const path = join(dir, 'run-淘宝.json'), before = readFileSync(path, 'utf8');
     const req = f.platformInput(dir, '淘宝', { shops: [{ shop: '未核店', itemIds: [11], status: '未回复', quotes: [] }] }); req.expectedRevision = 1;
@@ -513,6 +537,7 @@ test('quota changes leave completed platforms mergeable while unfinished checkpo
     const f = fixture(t), dir = f.bind(), run = f.read(dir);
     const searchCoverage = { runId: run.runId, platform: '淘宝', shopsPerItem: { min: 2, max: 2 }, products: [] };
     const finished = f.platformInput(dir, '淘宝', { status: 'completed', stages: { repliesDone: now() }, searchCoverage });
+    seedPart(f, dir, '淘宝', finished.snapshot);
     f.json('checkpoint', dir, f.input(finished));
     writeFileSync(join(f.data, 'settings.json'), JSON.stringify({ shopsPerItem: { min: 3, max: 3 } }));
     f.ok('check', dir, '淘宝'); f.ok('merge', dir, '--partial', '淘宝');
@@ -521,7 +546,8 @@ test('quota changes leave completed platforms mergeable while unfinished checkpo
     const stillFinished = f.platformInput(dir, '淘宝', facts(snapshot)); stillFinished.expectedRevision = snapshot.revision;
     f.json('checkpoint', dir, f.input(stillFinished));
     const unfinished = f.platformInput(dir, '1688', { searchCoverage: { ...searchCoverage, platform: '1688' } });
-    assert.match(f.cli(['checkpoint', dir, f.input(unfinished)]).stderr, /本次配置/);
+    f.json('plan-inquiry', dir);
+    assert.match(f.cli(['checkpoint', dir, f.input(unfinished)]).stderr, /当前执行必须保留新策略/);
 });
 
 
@@ -533,8 +559,10 @@ test('same-name merchants with explicit different sellerIds checkpoint and prese
         matches: [{ itemId: item.itemId, model: item.model, quantity: item.quantity, unit: item.unit, description: item.description,
             skuState: 'same', exactModel: true, suffix: true, specifications: true, verifiedAt: at }] }));
     const shops = run.items.map((item, index) => ({ shop: '同名店', merchantKey: 'id:sellerId:' + (index + 1), itemIds: [item.itemId], status: '未回复', sentAt: at, quotes: [] }));
-    const searchCoverage = { runId: run.runId, platform: '淘宝', shopsPerItem: { min: 2, max: 2 }, products };
+    f.json('plan-inquiry', dir);
+    const searchCoverage = { runId: run.runId, platform: '淘宝', inquiryStrategy: policy, products };
     const req = f.platformInput(dir, '淘宝', { searchCoverage, shops });
+    seedPart(f, dir, '淘宝', req.snapshot);
     f.json('checkpoint', dir, f.input(req));
     const before = JSON.parse(readFileSync(join(dir, 'run-淘宝.json')));
     const next = f.platformInput(dir, '淘宝', { searchCoverage, shops: [...shops].reverse() }); next.expectedRevision = before.revision;
@@ -551,7 +579,9 @@ test('message checkpoints uniquely bind the second historical same-name merchant
         matches: [{ itemId: item.itemId, model: item.model, quantity: item.quantity, unit: item.unit, description: item.description,
             skuState: 'same', exactModel: true, suffix: true, specifications: true, verifiedAt: at }] }));
     const shops = run.items.map((item, index) => ({ shop: '同名店', merchantKey: 'id:sellerId:' + (index + 1), itemIds: [item.itemId], status: '未回复', sentAt: at, quotes: [] }));
-    const searchCoverage = { runId: run.runId, platform: '淘宝', shopsPerItem: { min: 2, max: 2 }, products };
+    f.json('plan-inquiry', dir);
+    const searchCoverage = { runId: run.runId, platform: '淘宝', inquiryStrategy: policy, products };
+    seedPart(f, dir, '淘宝', { platform: '淘宝', status: 'running', stages: {}, shops, noStock: [], searchCoverage });
     f.json('checkpoint', dir, f.input(f.platformInput(dir, '淘宝', { searchCoverage, shops })));
     shops[1].pendingMessage = { messageId: 'second-merchant-follow-up', kind: 'followUp', text: '是现货吗？', preparedAt: at, state: 'pending' };
     const intent = f.platformInput(dir, '淘宝', { searchCoverage, shops }); intent.expectedRevision = 1;
@@ -568,6 +598,7 @@ test('message checkpoints uniquely bind the second historical same-name merchant
     missing.event = { ...intent.event, messageId: 'not-present' };
     assert.match(f.cli(['checkpoint', dir, f.input(missing)]).stderr, /唯一对应/);
     shops[0].pendingMessage = { ...shops[1].pendingMessage, state: 'pending' }; shops[1].pendingMessage.state = 'pending';
-    const ambiguous = f.platformInput(dir, '淘宝', { searchCoverage, shops }); ambiguous.expectedRevision = 3; ambiguous.event = intent.event;
+    shops.forEach(s => { s.pendingMessage.messageId = 'ambiguous-new-intent'; });
+    const ambiguous = f.platformInput(dir, '淘宝', { searchCoverage, shops }); ambiguous.expectedRevision = 3; ambiguous.event = { ...intent.event, messageId: 'ambiguous-new-intent' };
     assert.match(f.cli(['checkpoint', dir, f.input(ambiguous)]).stderr, /唯一对应/);
 });

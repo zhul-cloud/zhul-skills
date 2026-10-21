@@ -136,7 +136,7 @@ test('invalid patches reject all sibling changes without creating data or modify
         ['{"subagents":{"codex":{"prototype":{}}}}', /prototype.*禁止/],
         [{ 'subagents.codex.model': 'other' }, /未知/],
         [{ subagents: null }, /subagents.*必须是对象/],
-        [{ shopsPerItem: { min: 9, max: 2 } }, /shopsPerItem.*min 不能大于 max/],
+        [{ inquiryStrategy: { initialShopsPerPlatform: 9, maxShopsPerPlatform: 2 } }, /inquiryStrategy.*initialShopsPerPlatform 不能大于 maxShopsPerPlatform/],
         [{ pollIntervalSeconds: { min: 9, max: 2 } }, /pollIntervalSeconds.*min 不能大于 max/],
         [{ firstHumanReplyMinutes: -1 }, /firstHumanReplyMinutes.*非负/],
         [{ followUpReplyMinutes: '3' }, /followUpReplyMinutes.*数字/],
@@ -144,8 +144,8 @@ test('invalid patches reject all sibling changes without creating data or modify
         ['{"dedupeDays":1e400}', /dedupeDays.*有限/],
         [{ confirmBeforeSend: 'true' }, /confirmBeforeSend.*boolean/],
         [{ subagents: { enabled: 0 } }, /subagents.enabled.*boolean/],
-        [{ shopsPerItem: { min: 0 } }, /shopsPerItem.min.*正整数/],
-        [{ shopsPerItem: { max: 3.1 } }, /shopsPerItem.max.*正整数/],
+        [{ inquiryStrategy: { initialShopsPerPlatform: 0 } }, /inquiryStrategy.initialShopsPerPlatform.*正整数/],
+        [{ inquiryStrategy: { maxShopsPerPlatform: 3.1 } }, /inquiryStrategy.maxShopsPerPlatform.*正整数/],
         [{ maxFollowUpsPerShop: -1 }, /maxFollowUpsPerShop.*非负整数/],
         [{ maxFollowUpsPerShop: 0.5 }, /maxFollowUpsPerShop.*非负整数/],
         [{ pollIntervalSeconds: { min: 0 } }, /pollIntervalSeconds.min.*正的/],
@@ -308,10 +308,10 @@ test('reset nested leaves keeps siblings and other clients, pruning only emptied
 
 test('reset supports groups and multiple overlapping keys as one batch', (t) => {
     const f = fixture(t);
-    f.seed({ shopsPerItem: { min: 1, max: 5 }, pollIntervalSeconds: { min: 5, max: 50 }, subagents: { codex: { effort: 'high' }, claude: { effort: 'high' } }, dedupeDays: 0 });
-    f.ok('reset', 'shopsPerItem', 'pollIntervalSeconds.min', 'pollIntervalSeconds.max', 'subagents.codex.model', 'subagents.codex', 'subagents.codex', 'dedupeDays');
+    f.seed({ inquiryStrategy: { initialShopsPerPlatform: 1, maxShopsPerPlatform: 5 }, pollIntervalSeconds: { min: 5, max: 50 }, subagents: { codex: { effort: 'high' }, claude: { effort: 'high' } }, dedupeDays: 0 });
+    f.ok('reset', 'inquiryStrategy', 'pollIntervalSeconds.min', 'pollIntervalSeconds.max', 'subagents.codex.model', 'subagents.codex', 'subagents.codex', 'dedupeDays');
     assert.deepEqual(f.read(), { subagents: { claude: { effort: 'high' } } });
-    assert.deepEqual(f.effective().shopsPerItem, defaults.shopsPerItem);
+    assert.deepEqual(f.effective().inquiryStrategy, defaults.inquiryStrategy);
     assert.deepEqual(f.effective().subagents.codex, defaults.subagents.codex);
 });
 
@@ -359,7 +359,7 @@ test('reset rejects every invalid argument before writing any valid sibling', (t
     const f = fixture(t);
     f.seed({ dedupeDays: 0 });
     const before = f.snapshot();
-    const invalid = ['typo', '__proto__', 'constructor', 'prototype', 'subagents.__proto__', 'subagents.codex.constructor', 'thankYouMessages.0', 'shopsPerItem.min.0', '*', 'subagents.*', '--al', '--all=true', '--help', '', '.dedupeDays', 'dedupeDays.', 'subagents..codex'];
+    const invalid = ['typo', '__proto__', 'constructor', 'prototype', 'subagents.__proto__', 'subagents.codex.constructor', 'thankYouMessages.0', 'inquiryStrategy.initialShopsPerPlatform.0', '*', 'subagents.*', '--al', '--all=true', '--help', '', '.dedupeDays', 'dedupeDays.', 'subagents..codex'];
     for (const args of [['reset'], ['reset', '--all', 'dedupeDays'], ['reset', 'dedupeDays', '--all'], ['reset', '--all', '--all'], ...invalid.map((key) => ['reset', 'dedupeDays', key])]) {
         const result = f.cli(...args);
         assert.notEqual(result.status, 0, JSON.stringify(args));
@@ -370,14 +370,14 @@ test('reset rejects every invalid argument before writing any valid sibling', (t
 
 test('reset validates the combined batch, rejecting one-sided shops and polling ranges without writes', (t) => {
     const f = fixture(t);
-    for (const [group, range, badEnd] of [['shopsPerItem', { min: 5, max: 6 }, 'max'], ['shopsPerItem', { min: 1, max: 1 }, 'min'], ['pollIntervalSeconds', { min: 40, max: 50 }, 'max'], ['pollIntervalSeconds', { min: 2, max: 5 }, 'min']]) {
+    for (const [group, range, badEnd] of [['inquiryStrategy', { initialShopsPerPlatform: 5, maxShopsPerPlatform: 6 }, 'maxShopsPerPlatform'], ['inquiryStrategy', { initialShopsPerPlatform: 1, maxShopsPerPlatform: 1 }, 'initialShopsPerPlatform'], ['pollIntervalSeconds', { min: 40, max: 50 }, 'max'], ['pollIntervalSeconds', { min: 2, max: 5 }, 'min']]) {
         f.seed({ [group]: range, dedupeDays: 0 });
         const before = f.snapshot();
         const result = f.cli('reset', 'dedupeDays', `${group}.${badEnd}`);
         assert.notEqual(result.status, 0);
-        assert.match(result.stderr, /min 不能大于 max/);
+        assert.match(result.stderr, /不能大于/);
         f.unchanged(before);
-        f.ok('reset', `${group}.min`, `${group}.max`);
+        f.ok('reset', group);
         assert.deepEqual(f.read(), { dedupeDays: 0 });
     }
 });
@@ -390,25 +390,25 @@ test('reset repairs known bad personal leaves and groups only when all remaining
     f.unchanged(before);
     f.ok('reset', 'confirmBeforeSend', 'subagents.codex');
     assert.deepEqual(f.read(), { dedupeDays: 0 });
-    f.seed({ thankYouMessages: 'wrong', shopsPerItem: null, subagents: false });
+    f.seed({ thankYouMessages: 'wrong', inquiryStrategy: null, subagents: false });
     f.ok('reset', '--all');
     assert.deepEqual(f.read(), {});
 });
 
 test('same-version reset repairs changed defaults and removed overrides inherit same-version client defaults', (t) => {
     const f = fixture(t);
-    f.seed({ shopsPerItem: { max: 4 }, dedupeDays: 0, subagents: { codex: { model: 'pinned-model', effort: 'high' } } });
+    f.seed({ inquiryStrategy: { maxShopsPerPlatform: 4 }, dedupeDays: 0, subagents: { codex: { model: 'pinned-model', effort: 'high' } } });
     const updated = structuredClone(defaults);
-    updated.shopsPerItem = { min: 5, max: 6 };
+    updated.inquiryStrategy = { initialShopsPerPlatform: 5, targetComparableQuotes: 3, maxShopsPerPlatform: 6 };
     writeFileSync(f.defaultsPath, JSON.stringify(updated));
     assert.notEqual(f.cli('check').status, 0);
-    f.ok('reset', 'shopsPerItem.max', 'subagents.codex.model');
+    f.ok('reset', 'inquiryStrategy.maxShopsPerPlatform', 'subagents.codex.model');
     const remaining = f.snapshot();
     assert.deepEqual(f.read(), { dedupeDays: 0, subagents: { codex: { effort: 'high' } } });
     const otherSkill = join(f.root, 'same-version client');
     mkdirSync(join(otherSkill, 'scripts'), { recursive: true });
     for (const file of ['settings.mjs', 'config.mjs', 'data-lifecycle.mjs']) copyFileSync(join(f.scripts, file), join(otherSkill, 'scripts', file));
-    updated.shopsPerItem = { min: 7, max: 8 };
+    updated.inquiryStrategy = { initialShopsPerPlatform: 7, targetComparableQuotes: 3, maxShopsPerPlatform: 8 };
     updated.subagents.codex.model = 'future-model';
     updated.subagents.codex.effort = 'low';
     updated.dedupeDays = 20;
@@ -417,7 +417,7 @@ test('same-version reset repairs changed defaults and removed overrides inherit 
     const result = f.cliAt(join(otherSkill, 'scripts', 'settings.mjs'), 'json');
     assert.equal(result.status, 0, result.stderr);
     const effective = JSON.parse(result.stdout).settings;
-    assert.deepEqual(effective.shopsPerItem, updated.shopsPerItem);
+    assert.deepEqual(effective.inquiryStrategy, updated.inquiryStrategy);
     assert.deepEqual(effective.subagents.codex, { model: 'future-model', effort: 'high' });
     assert.equal(effective.dedupeDays, 0);
     assert.equal(f.snapshot(), remaining);
@@ -443,7 +443,7 @@ test('reset requires independently valid repository defaults, preserving persona
     const f = fixture(t);
     f.seed({ dedupeDays: 0 });
     const before = f.snapshot();
-    for (const text of ['{', '\uFEFF{}', 'null', JSON.stringify({ ...defaults, dedupeDays: -1 }), JSON.stringify({ ...defaults, shopsPerItem: { min: 9, max: 1 } })]) {
+    for (const text of ['{', '\uFEFF{}', 'null', JSON.stringify({ ...defaults, dedupeDays: -1 }), JSON.stringify({ ...defaults, inquiryStrategy: { initialShopsPerPlatform: 9, maxShopsPerPlatform: 1 } })]) {
         writeFileSync(f.defaultsPath, text);
         for (const args of [['reset', 'dedupeDays'], ['reset', '--all']]) {
             const result = f.cli(...args);
@@ -480,14 +480,14 @@ test('retained legacy personal key is read-only normalized with 2/2 preserved, t
     const f = fixture(t);
     const original = '{\n  "shopsPerLink": { "min": 2, "max": 2 }, "dedupeDays": 4\n}\n';
     f.seed(original);
-    assert.deepEqual(f.effective().shopsPerItem, { min: 2, max: 2 });
-    assert.match(f.ok(), /shopsPerItem.min \| 2 \| 个人/);
+    assert.deepEqual(f.effective().inquiryStrategy, { initialShopsPerPlatform: 2, targetComparableQuotes: 3, maxShopsPerPlatform: 4 });
+    assert.match(f.ok(), /inquiryStrategy.initialShopsPerPlatform \| 2 \| 个人/);
     f.ok('check'); f.unchanged(original);
     f.ok('set', f.patch({ confirmBeforeSend: true }));
-    assert.deepEqual(f.read(), { shopsPerItem: { min: 2, max: 2 }, dedupeDays: 4, confirmBeforeSend: true });
+    assert.deepEqual(f.read(), { inquiryStrategy: { initialShopsPerPlatform: 2 }, dedupeDays: 4, confirmBeforeSend: true });
     assert.equal(Object.hasOwn(f.read(), 'shopsPerLink'), false);
-    f.ok('reset', 'shopsPerItem');
-    assert.equal(Object.hasOwn(f.read(), 'shopsPerItem'), false);
+    f.ok('reset', 'inquiryStrategy');
+    assert.equal(Object.hasOwn(f.read(), 'inquiryStrategy'), false);
 });
 
 test('legacy key is rejected in defaults, patches and reset commands; ambiguous personal keys are never guessed', (t) => {
@@ -500,7 +500,25 @@ test('legacy key is rejected in defaults, patches and reset commands; ambiguous 
     assert.match(f.cli('set', f.patch({ dedupeDays: 3 })).stderr, /并存/);
     f.unchanged(before);
     f.seed({});
-    const oldDefaults = { ...defaults, shopsPerLink: defaults.shopsPerItem }; delete oldDefaults.shopsPerItem;
+    const oldDefaults = { ...defaults, shopsPerLink: { min: 2, max: 2 } }; delete oldDefaults.inquiryStrategy;
     writeFileSync(f.defaultsPath, JSON.stringify(oldDefaults));
     assert.match(f.cli('json').stderr, /shopsPerLink.*未知配置键/);
+});
+
+test('legacy max pins only the initial round, new fields stay sparse and over-cap personal choices require an explicit repair', t => {
+    const f = fixture(t); f.seed({ shopsPerItem: { min: 1, max: 3 }, dedupeDays: 4 });
+    const original = f.snapshot();
+    assert.deepEqual(f.effective().inquiryStrategy, { initialShopsPerPlatform: 3, targetComparableQuotes: 3, maxShopsPerPlatform: 4 });
+    f.unchanged(original);
+    f.ok('set', f.patch({ confirmBeforeSend: true }));
+    assert.deepEqual(f.read().inquiryStrategy, { initialShopsPerPlatform: 3 });
+    f.seed({ shopsPerItem: { min: 2, max: 5 } });
+    const invalid = f.snapshot(); assert.match(f.cli('check').stderr, /initialShopsPerPlatform 不能大于 maxShopsPerPlatform/); f.unchanged(invalid);
+    f.ok('set', f.patch({ inquiryStrategy: { initialShopsPerPlatform: 2 } }));
+    assert.deepEqual(f.read(), { inquiryStrategy: { initialShopsPerPlatform: 2 } });
+    f.seed({ shopsPerItem: { min: 2, max: 2 }, inquiryStrategy: { initialShopsPerPlatform: 2 } });
+    assert.match(f.cli('json').stderr, /并存/);
+    f.seed({});
+    f.ok('set', f.patch({ inquiryStrategy: { targetComparableQuotes: 20 } }));
+    assert.deepEqual(f.read(), { inquiryStrategy: { targetComparableQuotes: 20 } }, 'the target is best effort, not a promise tied to a platform count');
 });

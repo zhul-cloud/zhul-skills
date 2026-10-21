@@ -49,10 +49,12 @@
 
 草稿回执的固定字段与守卫见[主记录 draftReceipt](run-protocol.md#runjson)。每次实际 save 前保存 pending、有效 at、完整原 payload 和写前 expectedSnapshot；未知或已发失败保持原 payload 只读核对。pending/unknown/failed 会阻止重新生成包括 `--draft` 在内的所有 `erp-items` 输入，不以新平台完成或登录恢复绕过；confirmed 只有具备完整核对凭据才放行后续输入。
 
-每个平台完成即部分合并、生成草稿并核对；其他平台继续。任何平台仍 running/interrupted、存在未知发送或 stopAfterTask 时只留草稿，禁止正式提交。全部平台真正 completed/用户明确跳过后才完整合并并正式提交。正常报价截止按业务完成收尾、带 incompleteItems 的情形仍保留原有有效报价提交和缺价跳过机制。
+平台阶段报价或最终结果落盘后可部分合并、生成草稿并核对；其他平台继续，补轮由主代理按[业务策略](inquiry-rules.md#有效可比报价与补轮)统筹。任何平台仍 running/interrupted、存在未知发送或 stopAfterTask 时只留草稿，禁止正式提交。全部平台真正 completed/用户明确跳过后才完整合并并正式提交。正常报价截止按业务完成收尾、带 incompleteItems 的情形仍保留原有有效报价提交和缺价跳过机制。
+
+跨平台可比报价目标仅决定是否继续找新店，不过滤 ERP 输出。保留全部按原转换规则可提交的真实报价及真实挂牌价；缺可比证据的报价仍保存原信息，不能用 ERP 默认税费/包邮值充作可比确认。主体跨平台去重仅用于策略计数，不删除不同平台的真实报价行。
 
 1. 整理每个型号要填的报价（`run.json` 里 `status` 为已回复、挂牌价且有报价的店），以及是否需要标无货：
-   - 某个平台问过的店都没报价时，按 [inquiry-rules.md 第 3 节](inquiry-rules.md#3-店铺筛选标准手册第-2-节)「没有回价时」用公开挂牌价补救（货况「待确认」，备注「公开挂牌」）；所有启用平台一个价格都没有、且不在 `incompleteItems` 里的型号才勾「无货」，无货说明按平台写清问了几家、结果如何。同型号有有效报价时优先保留报价，不因另一个平台的 `noStock` 覆盖。报价截止时尚未完成挑店/发送的型号写 incompleteItems，无价不算无货；正常截止收尾完成后可提交其余有效报价。子代理卡住/记录损坏另将平台 interrupted，本轮仅代存草稿，不能借此按部分结果提交。
+   - 某个平台问过的店都没报价时，按 [inquiry-rules.md 第 3 节](inquiry-rules.md#3-店铺筛选标准手册第-2-节)「没有回价时」用公开挂牌价补救（货况「待确认」，备注「公开挂牌」）；仅有明确无货证据且已满足[逐项无货规则](inquiry-rules.md#6-把回复整理成报价)的型号才勾「无货」，说明按平台写清询问范围与原话依据；无价、没回复、不可比或补轮额度已满都不能推无货，无价且无法确认的型号转人工。同型号有有效报价时优先保留报价，不因另一个平台的 `noStock` 覆盖。报价截止时尚未完成挑店/发送的型号写 incompleteItems，无价不算无货；正常截止收尾完成后可提交其余有效报价。子代理卡住/记录损坏另将平台 interrupted，本轮仅代存草稿，不能借此按部分结果提交。
    - 价格异常按 `priceOutlierPercent` 判断（同型号各平台的报价放在一起比），写进该条备注。
 2. 每家店的报价在 `run.json` 里按下表写好（`erpApi` 按 ERP 字典把文字换成码值，不认识的取值会被拦下）：
 
@@ -68,7 +70,7 @@
 
 3. **平台结果即存草稿**：主代理部分合并指定持久快照后执行 `erp-items "<本次目录>/run.json" --draft`，输出已有报价 `{ taskId, items, skipItemIds }`，不把未完成平台推成无货。保存前持久化本次原 payload 和 `draftReceipt`，调用 `{ op: "save", taskId, submit: false, items, skipItemIds, expectedSnapshot: run.erpSnapshot }`。缺基线返回 SKILL_INPUT；对账发现实际写入范围的 ERP 变化返回 ERP_CONFLICT，不 PUT。没有报价则只保留本地结果，不空写草稿。
 4. **草稿核对及基线**：用原 payload 调 `{ op: "verify", taskId, submitted: false, items, skipItemIds, expectedSnapshot }`；expectedSnapshot 必须是本次 save 前持久化的原基线。仅 `ok: true` 且 `mismatches` 为空算核对成功。回执保存 `state:"confirmed"`、实际 verifiedAt、`verify:{ok:true,mismatches:[]}`、无重复且覆盖原 payload 实际 items 的 verifiedItemIds 和包含这些型号的同次 GET snapshot；保留本次 save 实际返回的写入 itemIds，不在丢回包时伪造。只把已确认 itemIds 对应的 snapshot.items 合并回持久化 erpSnapshot，其他型号保留原基线，防止吸收并发人工改动。不要另读 snapshot 后全量替换基线。恢复时若 save 回包丢失，先用原 draft payload 和原基线 verify，以 verifiedItemIds 确认完整范围；范围或结果不能确认则暂停写回、不盲吸收新值。草稿差异按第 7 条处理。
-5. **完整提交输入**：所有平台真实完成/明确跳过且无提交阻塞时默认 merge，再执行 `erp-items "<本次目录>/run.json"`。全部调用原样传 items 和 skipItemIds；后者只含无有效报价的未完成型号，其旧草稿保留，不随本次提交。有效报价优先于其他平台无货；正常截止 completed 带 incompleteItems 不阻止其他报价提交。没有任何可提交项不调用 save，转人工并本地收尾。有内容时先持久化该完整 payload，执行 save submit:false（含 expectedSnapshot）和 verify submitted:false，按第 4 条核对并更新实际写入范围基线；包括最终无货项在内的完整草稿核对通过后才进入第 6 条。
+5. **完整提交输入**：所有平台真实完成/明确跳过且无提交阻塞时默认 merge，再执行 `erp-items "<本次目录>/run.json"`。全部调用原样传 items 和 skipItemIds；后者包含无可填报价的未完成型号，以及新策略下无法全部确认无货的业务不足型号；这些型号的旧草稿保留，不随本次提交。有效报价优先于其他平台无货；正常截止 completed 带 incompleteItems 不阻止其他报价提交。没有任何可提交项不调用 save，转人工并本地收尾。有内容时先持久化该完整 payload，执行 save submit:false（含 expectedSnapshot）和 verify submitted:false，按第 4 条核对并更新实际写入范围基线；包括最终无货项在内的完整草稿核对通过后才进入第 6 条。
 6. **提交一次与核对**：提交前先把最终原 payload 持久化在个人 run 目录，写 `submissionAttempt: { state: "pending", at }`，再调用 `{ op: "save", taskId, submit: true, items, skipItemIds, expectedSnapshot: run.erpSnapshot }`。最终提交按完整持久化基线核对所有实际写入型号，包括自动带入的其他草稿，不换新基线绕过冲突。
    - 提交后用相同原 payload 调 `{ op: "verify", taskId, submitted: true, items, skipItemIds, expectedSnapshot }`，使用本次正式 PUT 前的原基线。核对包含保留报价和自动带入的其他型号草稿。只有 ok 且 mismatches 为空才确认本次实际写入范围，写 `submitted: true`、真实 stages.submitted 和 attempt.confirmed；需要审核账号的待审核也算本次提交成功。将 `inDoneList`、`filledCount` / `itemCount` 保存为任务汇总观察，不参与 helper 的 ok 判定：不能因仍在待处理、已填数不等于本次提交数或未满型号数判失败，也不能由汇总判成功。部分提交、skip 或 locked 型号可能使任务继续待处理；列表反映整个任务状态，本人已填数还可包含草稿、待审核、作废报价，不能等同已提交数或任务完成数。
    - 任何已发 PUT 或发送状态未知的尝试（pending/unknown/failed/confirmed）都不能再次 submit；请求中断、结果未知记 unknown，只用原 payload 只读 verify。仅 helper 明确返回 writeAttempted:false（确实未进入 PUT）时可记 state:not_sent；修复后用原 payload 重试，调用前再写 pending。错误名、登录恢复或推断均不能代替未发证据；ERP_BIZ 也必须区分 GET 与 PUT 阶段。明确失败/差异转人工，不把未知结果称为未提交草稿。

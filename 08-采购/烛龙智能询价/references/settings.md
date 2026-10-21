@@ -11,7 +11,7 @@
 AI 按以下流程处理，用户无需直接操作内部命令：
 
 1. **查看或解释**：执行 `node "<技能目录>/scripts/settings.mjs"`，校验通过后展示全部配置项表格（键名、有效值、来源、中文说明），以及默认配置、个人配置和数据目录的绝对路径；校验失败不输出配置表，如实报告问题，不自行修复。只问参数效果或当前值时只读；检查请求执行 `node "<技能目录>/scripts/settings.mjs" check`，校验发布默认值、个人覆盖的格式与键名，以及合并后的有效配置。不运行 `init`，不创建数据目录或个人文件，不声称当前版本已初始化。
-2. **设置配置值**：先明确具体项和值，含糊时才澄清，不替用户选值。已运行的询价须按 [SKILL.md「暂停、用户停止与失败边界」](../SKILL.md#暂停用户停止与失败边界)先结束或停止，并确认所有执行者已停；查看无须停止。随后先执行 `node "<技能目录>/scripts/records.mjs" init`，按[数据生命周期](data-lifecycle.md)报告保留或重建结果，再读取当前配置；保留的坏值按[校验边界](#校验边界)修复。只生成包含用户要求项的嵌套 JSON 补丁，写到数据目录以外的临时路径后执行 `node "<技能目录>/scripts/settings.mjs" set "<补丁.json>"`。保留其余个人覆盖，整批校验合并结果后原子写入个人文件，失败不改原文件。成功展示修改前后有效值、个人覆盖的新增/更新和路径；已有相同个人覆盖时报告「配置无变化，未重写文件」。例如「每个明细在每个平台固定问 5 家」同时设 `shopsPerItem.min` 和 `shopsPerItem.max` 为 `5`；仅修改一端时也必须满足最小值不大于最大值。
+2. **设置配置值**：先明确具体项和值，含糊时才澄清，不替用户选值。已运行的询价须按 [SKILL.md「暂停、用户停止与失败边界」](../SKILL.md#暂停用户停止与失败边界)先结束或停止，并确认所有执行者已停；查看无须停止。随后先执行 `node "<技能目录>/scripts/records.mjs" init`，按[数据生命周期](data-lifecycle.md)报告保留或重建结果，再读取当前配置；保留的坏值按[校验边界](#校验边界)修复。只生成包含用户要求项的嵌套 JSON 补丁，写到数据目录以外的临时路径后执行 `node "<技能目录>/scripts/settings.mjs" set "<补丁.json>"`。保留其余个人覆盖，整批校验合并结果后原子写入个人文件，失败不改原文件。成功展示修改前后有效值、个人覆盖的新增/更新和路径；已有相同个人覆盖时报告「配置无变化，未重写文件」。例如「首轮每平台 2 家、跨平台目标 3 家、每平台累计最多 4 家」对应 `inquiryStrategy.initialShopsPerPlatform`、`inquiryStrategy.targetComparableQuotes`、`inquiryStrategy.maxShopsPerPlatform`；只修改用户指定项，合并后仍须满足首轮数量不大于累计上限。
 3. **作用范围**：只写 `<数据目录>/settings.json` 中的指定覆盖，不把完整有效配置复制进去、不改仓库默认值或 AI 全局配置。同一电脑、同一系统用户下的客户端和技能副本共用个人覆盖，各副本仍读取自己的发布默认值。后续每次实际开始新询价都重新读取并检查有效配置，含同一会话后续启动，不用旧上下文中的值；不在进行中的询价里热改。当前不支持自动「仅本次临时覆盖」，用户只要求本次临时时不能擅自永久保存。
 4. **自行编辑与继承**：先停止询价并按[数据生命周期](data-lifecycle.md)完成当前版本初始化，再编辑个人文件。文件使用嵌套对象，仅保留需要固定的已知字段；移除某个覆盖键即可恢复继承默认值，AI 操作见下文[恢复默认与继承](#恢复默认与继承)。显式设值即使等于当前默认，也保存为个人覆盖，固定该选择；只有已有同值覆盖才不重写。数组（如 `thankYouMessages`）整体替换，不逐项合并。`0`、`false` 和允许留空字段的空字符串都是有效的显式值，不当成缺项。个人文件和补丁均须使用 UTF-8 无 BOM 编码及合法 JSON 格式，JSON 不允许注释。改完用 `settings.mjs check` 检查，失败先处理配置问题，不开始业务。
 5. **本机调整与发布**：个人调整不进入仓库，不要求升技能版本、改 CHANGELOG 或走 PR。维护者修改发布默认值按[采购修改规则](../../README.md#修改规则)同步受影响文档、版本与 [CHANGELOG.md](../CHANGELOG.md)；升级的数据处理见本文开头的生命周期规则。
@@ -30,12 +30,12 @@ AI 按以下流程处理，用户无需直接操作内部命令：
 
 ```bash
 node "<技能目录>/scripts/settings.mjs" reset firstHumanReplyMinutes
-node "<技能目录>/scripts/settings.mjs" reset shopsPerItem.min shopsPerItem.max
+node "<技能目录>/scripts/settings.mjs" reset inquiryStrategy.initialShopsPerPlatform inquiryStrategy.maxShopsPerPlatform
 node "<技能目录>/scripts/settings.mjs" reset subagents.codex
 node "<技能目录>/scripts/settings.mjs" reset --all
 ```
 
-配置键使用已知点路径，也支持 `shopsPerItem`、`subagents.codex` 等对象组；多个键整批移除、合并校验后一次写入。恢复一端仍须满足 `min <= max`，冲突时原文件保留，可一次恢复两端或整个组。`--all` 仅将个人 `settings.json` 清空为 `{}`，不动 ERP 地址、运行记录或其他数据。无参 `reset`、未知键、`--all` 与其他键混用都报错且不写入。`set` 不能删除键，显式设置为当前默认仍固定该选择，`null` 或 `{}` 也不是删除指令。
+配置键使用已知点路径，也支持 `inquiryStrategy`、`subagents.codex` 等对象组；多个键整批移除、合并校验后一次写入。恢复策略指定项后仍须满足首轮数量不大于累计上限，冲突时原文件保留，可一次恢复相关项或整个组。`--all` 仅将个人 `settings.json` 清空为 `{}`，不动 ERP 地址、运行记录或其他数据。无参 `reset`、未知键、`--all` 与其他键混用都报错且不写入。`set` 不能删除键，显式设置为当前默认仍固定该选择，`null` 或 `{}` 也不是删除指令。
 
 工具使用共享配置模块的写入锁、并发原文检查和原子写入；失败不改原文件。个人文件不存在或所有指定路径均不存在时不写入、不创建文件，已有 `{}` 时全部恢复也不重写；显式选中的空配置组仍会移除并保存，仅删除空组不改变有效值。成功后展示前后有效值、移除的个人覆盖和路径；执行 `settings.mjs check`，按需用无参命令展示恢复后的有效值和来源。校验失败如实报告，不启动询价；可修复范围见下文[校验边界](#校验边界)。
 
@@ -50,7 +50,7 @@ node "<技能目录>/scripts/settings.mjs" reset --all
 | 配置 | 允许值 |
 |---|---|
 | `confirmBeforeSend`、`subagents.enabled` | 布尔值 `true` / `false` |
-| `shopsPerItem.min`、`shopsPerItem.max` | 正整数，且 `min <= max` |
+| `inquiryStrategy.initialShopsPerPlatform`、`inquiryStrategy.targetComparableQuotes`、`inquiryStrategy.maxShopsPerPlatform` | 正整数，且首轮数量不大于每平台累计上限 |
 | `maxFollowUpsPerShop` | 非负整数 |
 | `dedupeDays`、`firstHumanReplyMinutes`、`followUpReplyMinutes` | 非负有限数；防重复设为 0 表示不防重复，等待设为 0 表示立即结束对应等待 |
 | `pollIntervalSeconds.min`、`pollIntervalSeconds.max`、`subagents.stallMinutes` | 正有限数；轮询满足 `min <= max` |
@@ -69,16 +69,18 @@ node "<技能目录>/scripts/settings.mjs" reset --all
 | 取值 | 效果 |
 |---|---|
 | `false` | **自主执行**。AI 挑好店直接发询价，不请求发送前确认 |
-| `true` | AI 等全部未跳过平台挑好店后，按[发送确认分支](execution.md#何时提问答后回到哪里)汇总实际店铺和话术，由主代理取得一次明确同意后再发 |
+| `true` | AI 每轮按[发送确认分支](execution.md#何时提问答后回到哪里)汇总可继续平台的实际新店和完整话术，由主代理取得明确同意后再发；参与范围与故障等待边界以该分支为准，新店名单或话术变化需重新确认 |
 
 - 只管「发询价」这一步，不改变共享的[暂停与恢复规则](execution.md#暂停与恢复)。
 
-### shopsPerItem：每个 ERP 明细在每个平台询价几家店
+### inquiryStrategy：首轮、有效报价目标与补轮上限
 
-- 按 `itemId` 独立计算各平台的不同商家数；`max` 是挑店目标和新增上限，达到后立即停止该明细的搜索；`min` 是候选耗尽时的不足下限。两端相同表示固定目标；不足不凑数，既有已发/待核/沿用事实超过新目标时也保留。
-- 同平台多条货源链接用于补缺口，共享候选和已核商品资料；同商家不同商品/链接只计一家，不同明细可共用同店并合并首次询价。候选不等于型号核验通过，更不等于确认现货。完整规则见 [找店与挑店](inquiry-rules.md#找店与挑店)。
-- 建议范围：1 到 5。家数越多，找店、等待和整理时间越长。
-- 保留的个人旧键 `shopsPerLink` 只在读取时按本字段规范化，数值原样保留且只读不改盘；下一次明确配置写入时使用新键。两键并存则报错，不能猜值。发布默认、`set` 和 `reset` 仅接受 `shopsPerItem`。
+- `initialShopsPerPlatform`：每个 ERP 明细在每个平台首轮联系的不同商家数。
+- `targetComparableQuotes`：每个明细跨启用平台的有效可比报价商家目标；它不是 ERP 最多保存几条报价。
+- `maxShopsPerPlatform`：该明细在每个平台累计联系的不同商家上限，包含之前轮次的进度；不是每轮重新取得的额度。
+- 具体计数、可比证据、主体去重和停止新店规则统一见[有效可比报价与补轮](inquiry-rules.md#有效可比报价与补轮)。这些策略不改变店级计时、追问、截止或发送权限。
+- 保留的个人旧组 `shopsPerItem` 或 `shopsPerLink` 只在读取时将旧 `max` 规范化为首轮数量；旧 `min` 不再有不足告警含义。目标和累计上限缺项继承当前发布默认，不能把旧 `max` 当成累计上限。只读及 `init` 都不改个人文件；下一次用户明确配置写入才按新组保存。两个旧组并存或新旧组并存均拒绝猜值。
+- 发布默认、`set` 和 `reset` 只接受 `inquiryStrategy` 及其新字段。旧首轮值大于当前累计上限时报告冲突，由用户明确选择修复或恢复相关配置，不自动扩大上限或清空其他个人设置。
 
 ### firstHumanReplyMinutes：等首次人工回复的时间（分钟）
 

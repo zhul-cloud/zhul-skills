@@ -10,6 +10,7 @@ export const PENDING = join(DATA_DIR, '.records-pending.json');
 export const META = ['schemaVersion', 'runId', 'skillVersion', 'executionVersion', 'revision', 'eventSeq', 'createdAt', 'updatedAt'];
 export const EVENT_PHASES = {
     'task.read': 'task', 'item.selected': 'selection', 'link.processed': 'selection', 'shop.checked': 'selection', 'shop.selected': 'selection', 'shop.skipped': 'selection',
+    'inquiry.planned': 'selection',
     'message.intent': 'messaging', 'message.confirmed': 'messaging', 'message.unknown': 'messaging', 'message.cancelled': 'messaging',
     'reply.received': 'messaging', 'quote.recorded': 'messaging', 'shop.ended': 'messaging',
     'human.requested': 'human', 'human.returned': 'human', 'human.verified': 'human',
@@ -144,7 +145,7 @@ export function eventFields(run, actor, event, automatic = false) {
     if (!['main', ...(run.platforms ?? [])].includes(actor)) fail('EVENT_ACTOR', 'actor 必须为 main 或本次平台');
     const phases = automatic ? { ...EVENT_PHASES, ...AUTO_PHASES } : EVENT_PHASES;
     if (!object(event) || !Object.hasOwn(phases, event.eventType) || event.phase !== phases[event.eventType]) fail('EVENT_TYPE', 'eventType/phase 不在允许组合中');
-    if ((event.eventType === 'task.read' || /^erp\.|^run\./.test(event.eventType)) && actor !== 'main') fail('EVENT_ACTOR', '任务、ERP和run事件仅主执行者记录');
+    if ((event.eventType === 'task.read' || event.eventType === 'inquiry.planned' || /^erp\.|^run\./.test(event.eventType)) && actor !== 'main') fail('EVENT_ACTOR', '任务、ERP、询价计划和run事件仅主执行者记录');
     const allowed = ['eventType', 'phase', 'platform', 'occurredAt', 'itemIds', 'outcome', 'reason', 'requestId', 'messageId', 'messageKind', 'correlationId', 'elapsedMs', 'toolCalls', 'stage', 'signal', 'shop'];
     if (Object.keys(event).some(k => !allowed.includes(k))) fail('EVENT_FIELDS', '事件只允许简短结构字段，不接收聊天原文或凭据');
     const platform = event.platform ?? (actor === 'main' ? null : actor);

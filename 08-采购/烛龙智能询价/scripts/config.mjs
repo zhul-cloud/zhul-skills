@@ -12,8 +12,9 @@ export const USER_SETTINGS_PATH = join(DATA_DIR, 'settings.json');
 
 export const fields = {
     confirmBeforeSend: ['boolean', '发询价前是否先请用户确认店铺与话术'],
-    'shopsPerItem.min': ['positiveInteger', '每个ERP明细在每个平台的最低店数；建议 1–5'],
-    'shopsPerItem.max': ['positiveInteger', '每个ERP明细在每个平台的目标/最多店数；建议 1–5'],
+    'inquiryStrategy.initialShopsPerPlatform': ['positiveInteger', '每个ERP明细在每个平台首轮联系的不同商家数'],
+    'inquiryStrategy.targetComparableQuotes': ['positiveInteger', '每个ERP明细跨平台的有效可比报价商家目标'],
+    'inquiryStrategy.maxShopsPerPlatform': ['positiveInteger', '每个ERP明细在每个平台累计联系的不同商家上限'],
     firstHumanReplyMinutes: ['nonnegativeNumber', '等待首次人工回复的分钟数；0 表示即时结束'],
     followUpReplyMinutes: ['nonnegativeNumber', '追问或答复后等待的分钟数；0 表示即时结束'],
     'pollIntervalSeconds.min': ['positiveNumber', '查看回复的最短秒数；建议不低于 10'],
@@ -73,7 +74,7 @@ export function validate(settings) {
         }
     }
     checkKeys(settings);
-    for (const key of ['shopsPerItem', 'pollIntervalSeconds', 'subagents', 'subagents.claude', 'subagents.codex']) {
+    for (const key of ['inquiryStrategy', 'pollIntervalSeconds', 'subagents', 'subagents.claude', 'subagents.codex']) {
         if (!object(get(settings, key))) fail(key, '必须是对象');
     }
     const efforts = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
@@ -96,7 +97,8 @@ export function validate(settings) {
         }
         if (!valid) fail(key, reason);
     }
-    for (const key of ['shopsPerItem', 'pollIntervalSeconds']) {
+    if (settings.inquiryStrategy.initialShopsPerPlatform > settings.inquiryStrategy.maxShopsPerPlatform) fail('inquiryStrategy', 'initialShopsPerPlatform 不能大于 maxShopsPerPlatform；旧个人店数请用新配置修复');
+    for (const key of ['pollIntervalSeconds']) {
         if (settings[key].min > settings[key].max) fail(key, 'min 不能大于 max');
     }
 }
@@ -143,11 +145,18 @@ function optionalText(path) {
 
 // 只规范化保留的个人旧键；发布默认值和set/reset仍只接受新键。只读调用不改盘。
 export function normalizePersonalSettings(value) {
-    if (!object(value) || !Object.hasOwn(value, 'shopsPerLink')) return value;
-    if (Object.hasOwn(value, 'shopsPerItem')) fail('shopsPerItem', '与旧个人键 shopsPerLink 并存，请明确保留哪一项');
+    if (!object(value)) return value;
+    const old = ['shopsPerItem', 'shopsPerLink'].filter(key => Object.hasOwn(value, key));
+    if (!old.length) return value;
+    if (old.length > 1 || Object.hasOwn(value, 'inquiryStrategy')) fail('inquiryStrategy', '新旧个人店数配置并存，请明确保留哪一项');
     const next = structuredClone(value);
-    next.shopsPerItem = next.shopsPerLink;
-    delete next.shopsPerLink;
+    const range = next[old[0]];
+    if (!object(range) || Object.keys(range).some(key => !['min', 'max'].includes(key))
+        || Object.values(range).some(v => !Number.isInteger(v) || v <= 0)
+        || range.min != null && range.max != null && range.min > range.max) fail(old[0], '旧店数配置无效，请核对原值后修复');
+    // 原max是首轮目标；已取消的min不足阈值不迁移，新的报价目标/累计上限继承新版默认。
+    next.inquiryStrategy = range.max === undefined ? {} : { initialShopsPerPlatform: range.max };
+    delete next[old[0]];
     return next;
 }
 
