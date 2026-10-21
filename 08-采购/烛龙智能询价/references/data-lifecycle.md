@@ -7,7 +7,7 @@
 只有 `node "<技能目录>/scripts/records.mjs" init`（含显式 `--erp <地址>`）执行版本生命周期处理。版本取当前 `SKILL.md`，按三段语义版本比较；成功完成初始化（含旧 pending 恢复及 ERP 地址校验）后，最后写入 `<数据目录>/.skill-version.json`，表示最近成功初始化的技能版本：
 
 ```json
-{ "schemaVersion": 1, "skillVersion": "2.12.0" }
+{ "schemaVersion": 1, "skillVersion": "2.12.1" }
 ```
 
 | 数据状态 | `init` 行为 |

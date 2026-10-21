@@ -333,7 +333,8 @@ for (const expectedSnapshot of [undefined, null, {}, { taskId: 1, items: [] }]) 
     { op: 'save', taskId: 1, submit: false, items: fresh, expectedSnapshot },
     (o, s, env) => o.error === 'SKILL_INPUT' && o.problems[0].path.startsWith('expectedSnapshot') && !s.lastPut && env.calls.length === 0);
 }
-const beforeDetail = baseDetail([q({ id: 301, attachments: [{ id: 10 }] })], [q({ id: 302, shopName: '店X' })]);
+// 税率预置合法值，使单独翻转 taxIncluded 的漂移仍是有效 ERP 数据，专测基线冲突。
+const beforeDetail = baseDetail([q({ id: 301, taxRate: 13, attachments: [{ id: 10 }] })], [q({ id: 302, shopName: '店X' })]);
 const persisted = (await readSnapshot(beforeDetail)).snapshot;
 const fieldChanges = { id: 999, channel: 2, shopName: '人工店名', supplierId: 5, unitPrice: 999, taxIncluded: true,
   taxRate: 3, itemCondition: 2, leadTime: 2, note: '人工备注', noStock: true, freeShipping: false, recommended: true,
@@ -673,6 +674,141 @@ for (const review of [false, true]) {
   results.push({ name: `同店更新完整草稿/提交链保留供应商、附件及${review ? '审核流不携推荐' : '非审核流原推荐'}，核对拒绝丢字段`,
     pass: stages.length === (review ? 6 : 9) && stages.every(Boolean) && env.calls.filter((c) => c.method === 'PUT').length === 3,
     out: JSON.stringify({ stages, lastPut: state.lastPut }) });
+}
+
+// 核对实际 ERP 数值不能用 Number(null) 或四舍五入掩盖丢字段/非法税率。
+const zeroInput = (unitPrice = 0, taxRate) => [{ itemId: 1, quotes: [{ channel: '淘宝', shopName: 'ZERO', unitPrice,
+  taxIncluded: taxRate !== undefined, ...(taxRate === undefined ? {} : { taxRate }), condition: '全新原装', leadTime: '现货', note: 'n' }] }];
+for (const submitted of [false, true]) for (const inputPrice of [0, '0']) {
+  for (const actualPrice of [0, -0.001, null, undefined, '0']) {
+    await t(`verify实际单价${JSON.stringify(actualPrice)}不冒充0，payload=${JSON.stringify(inputPrice)} submitted=${submitted}`,
+      { detail: baseDetail([q({ shopName: 'ZERO', unitPrice: actualPrice, status: submitted ? 2 : 1 })], [], false) },
+      { op: 'verify', taskId: 1, submitted, items: zeroInput(inputPrice) },
+      (o, state, env) => (actualPrice === 0 ? o.ok === true : o.ok === false && (o.error === 'ERP_CONTRACT' || o.mismatches?.some(m => m.problem.includes('单价'))))
+        && !state.lastPut && env.calls.every(c => c.method !== 'PUT'));
+  }
+}
+for (const submitted of [false, true]) for (const expectedTax of [3, 13]) {
+  for (const actualTax of [3, 13, 12.6, 13.4, 1, null, undefined, '13']) {
+    await t(`verify税率精确核对 actual=${JSON.stringify(actualTax)} expected=${expectedTax} submitted=${submitted}`,
+      { detail: baseDetail([q({ shopName: 'ZERO', unitPrice: 0, taxIncluded: true, taxRate: actualTax, status: submitted ? 2 : 1 })], [], false) },
+      { op: 'verify', taskId: 1, submitted, items: zeroInput('0', String(expectedTax)) },
+      (o, state, env) => (actualTax === expectedTax ? o.ok === true : o.ok === false && (o.error === 'ERP_CONTRACT' || o.mismatches?.some(m => m.problem.includes('税率'))))
+        && !state.lastPut && env.calls.every(c => c.method !== 'PUT'));
+  }
+}
+for (const taxRate of [12.6, 13.4, null, undefined]) for (const submit of [false, true]) {
+  await t(`保留旧含税报价非法税率${JSON.stringify(taxRate)}不改值不PUT submit=${submit}`,
+    { detail: baseDetail([q({ taxIncluded: true, taxRate })]) },
+    { op: 'save', taskId: 1, submit, items: fresh },
+    (o, state, env) => o.error === 'ERP_CONTRACT' && o.endpoint === 'detail' && o.writeAttempted === false
+      && o.problems.some(p => p.path.endsWith('.taxRate')) && o.hint.includes('原 ERP') && !state.lastPut && env.calls.every(c => c.method !== 'PUT'));
+}
+for (const taxRate of [1, 3, 13]) for (const submit of [false, true]) {
+  await t(`保留旧合法税率${taxRate}原样写入 submit=${submit}`, { detail: baseDetail([q({ taxIncluded: true, taxRate })]) },
+    { op: 'save', taskId: 1, submit, items: fresh },
+    (o, state) => o.ok && state.lastPut.items[0].quotes.find(q => q.shopName === '店A').taxRate === taxRate);
+}
+for (const taxRate of [12.6, 13.4]) {
+  await t(`自动带入其他型号旧草稿拒绝非法税率${taxRate}且零PUT`,
+    { detail: baseDetail([], [q({ taxIncluded: true, taxRate })]) },
+    { op: 'save', taskId: 1, submit: true, items: fresh },
+    (o, state, env) => o.error === 'ERP_CONTRACT' && o.writeAttempted === false && !state.lastPut && env.calls.every(c => c.method !== 'PUT'));
+  await t(`verify原基线保留的非法税率${taxRate}不重建为合法值`,
+    { detail: baseDetail([q({ taxIncluded: true, taxRate })]) },
+    { op: 'verify', taskId: 1, submitted: false, items: fresh },
+    (o, state, env) => o.error === 'ERP_CONTRACT' && !state.lastPut && env.calls.every(c => c.method !== 'PUT'));
+  for (const mode of ['draft-unrelated', 'submit-skip', 'submit-locked']) {
+    const detail = baseDetail([], [q({ taxIncluded: true, taxRate })]);
+    if (mode === 'submit-locked') detail.items[1].locked = true;
+    await t(`未写范围的非法税率${taxRate}不阻断合法${mode}`, { detail },
+      { op: 'save', taskId: 1, submit: mode !== 'draft-unrelated', items: fresh, ...(mode === 'submit-skip' ? { skipItemIds: [2] } : {}) },
+      (o, state) => o.ok && state.lastPut.items.length === 1 && state.lastPut.items[0].itemId === 1);
+  }
+}
+for (const taxRate of [3, 13]) for (const review of [false, true]) {
+  const state = { detail: baseDetail([q({ id: 701, shopName: 'ZERO', unitPrice: 50, taxIncluded: true, taxRate: 12.6,
+    supplierId: 88, recommended: true, attachments: [{ id: 101 }] })], [], review), applyWrites: true };
+  const env = makeEnv(state), items = zeroInput('0', String(taxRate)), stages = [];
+  let baseline = (await readSnapshot(state.detail)).snapshot;
+  for (const submit of [false, true]) {
+    const saved = await erpApi(env.browser, 1, { op: 'save', taskId: 1, submit, items, expectedSnapshot: baseline });
+    const written = state.lastPut?.items[0].quotes.find(q => q.shopName === 'ZERO');
+    const verified = await erpApi(env.browser, 1, { op: 'verify', taskId: 1, submitted: submit, items, expectedSnapshot: baseline });
+    stages.push(saved.ok && verified.ok && written?.unitPrice === 0 && written?.taxRate === taxRate && written?.supplierId === 88
+      && JSON.stringify(written?.attachmentIds) === '[101]' && (review ? !Object.hasOwn(written, 'recommended') : written.recommended === true));
+    if (!verified.ok) break;
+    for (const id of verified.verifiedItemIds) baseline.items[baseline.items.findIndex(i => i.itemId === id)] = verified.snapshot.items.find(i => i.itemId === id);
+  }
+  results.push({ name: `显式同店合法税率${taxRate}纠正旧12.6并保留元数据，0价草稿/提交逐次核对 review=${review}`,
+    pass: stages.length === 2 && stages.every(Boolean) && env.calls.filter(c => c.method === 'PUT').length === 2,
+    out: JSON.stringify({ stages, lastPut: state.lastPut }) });
+}
+
+for (const submit of [false, true]) for (const review of [false, true]) {
+  const original = q({ shopName: 'LEGACY-ONE', unitPrice: 80, taxIncluded: true, taxRate: 1 });
+  const state = { detail: submit ? baseDetail([], [original], review) : baseDetail([original], [], review), applyWrites: true };
+  const env = makeEnv(state), items = zeroInput(0);
+  const baseline = (await readSnapshot(state.detail)).snapshot;
+  const saved = await erpApi(env.browser, 1, { op: 'save', taskId: 1, submit, items, expectedSnapshot: baseline });
+  const legacy = state.lastPut?.items.flatMap(i => i.quotes).find(q => q.shopName === 'LEGACY-ONE');
+  const verified = await erpApi(env.browser, 1, { op: 'verify', taskId: 1, submitted: submit, items, expectedSnapshot: baseline });
+  results.push({ name: `实际启用字典旧1%${submit ? '自动带入其他型号提交' : '同型号草稿保留'}原值且verify通过 review=${review}`,
+    pass: saved.ok && verified.ok && legacy?.taxRate === 1 && env.calls.filter(c => c.method === 'PUT').length === 1,
+    out: JSON.stringify({ saved, verified, lastPut: state.lastPut }) });
+}
+for (const op of ['save', 'verify']) for (const submitted of [false, true]) {
+  await t(`新价1%不因旧字典启用而扩大SOP范围 ${op} submitted=${submitted}`, { detail: baseDetail() },
+    { op, taskId: 1, items: zeroInput(0, 1), [op === 'save' ? 'submit' : 'submitted']: submitted },
+    (o, state, env) => o.error === 'SKILL_INPUT' && o.problems.some(p => p.path.endsWith('.taxRate'))
+      && (op !== 'save' || o.writeAttempted === false) && !state.lastPut && env.calls.every(c => c.method !== 'PUT'));
+}
+
+for (const submit of [false, true]) {
+  const detail = submit ? baseDetail([], [q({ taxIncluded: true, taxRate: 1 })]) : baseDetail([q({ taxIncluded: true, taxRate: 1 })]);
+  const fetchHook = async url => {
+    if (!url.includes('dictType=inquiry_tax_rate')) return undefined;
+    return { status: 200, text: async () => JSON.stringify({ code: 0, message: 'ok',
+      data: dictItems('inquiry_tax_rate').map(d => d.itemValue === '1' ? { ...d, status: 0 } : d) }) };
+  };
+  await t(`旧1%仅在实际启用字典才保留，停用后拒绝PUT submit=${submit}`, { detail, fetchHook },
+    { op: 'save', taskId: 1, submit, items: fresh },
+    (o, state, env) => o.error === 'ERP_CONTRACT' && o.writeAttempted === false && !state.lastPut && env.calls.every(c => c.method !== 'PUT'));
+}
+
+// 被保留/自动带入的旧单价错误属于ERP原数据，不误导改本地报价；显式合法替换仍允许。
+for (const unitPrice of [null, undefined, -0.001, '0']) for (const submit of [false, true]) {
+  const detail = submit ? baseDetail([], [q({ unitPrice })]) : baseDetail([q({ unitPrice })]);
+  await t(`原ERP保留/自动带入坏单价${JSON.stringify(unitPrice)}按合同拒绝 submit=${submit}`, { detail },
+    { op: 'save', taskId: 1, submit, items: fresh },
+    (o, state, env) => o.error === 'ERP_CONTRACT' && o.writeAttempted === false && !state.lastPut
+      && env.calls.every(c => c.method !== 'PUT') && o.problems.some(p => p.path.endsWith('.unitPrice')));
+}
+for (const unitPrice of [null, undefined, -0.001]) {
+  for (const mode of ['draft-unrelated', 'submit-skip', 'submit-locked']) {
+    const detail = baseDetail([], [q({ unitPrice })]); if (mode === 'submit-locked') detail.items[1].locked = true;
+    await t(`旧坏单价${JSON.stringify(unitPrice)}未写范围不阻断 ${mode}`, { detail },
+      { op: 'save', taskId: 1, submit: mode !== 'draft-unrelated', items: fresh, ...(mode === 'submit-skip' ? { skipItemIds: [2] } : {}) },
+      (o, state) => o.ok && state.lastPut.items.length === 1 && state.lastPut.items[0].itemId === 1);
+  }
+  for (const review of [false, true]) {
+    const state = { detail: baseDetail([q({ id: 801, shopName: 'ZERO', unitPrice, supplierId: 88,
+      recommended: true, attachments: [{ id: 101 }] })], [], review), applyWrites: true };
+    const env = makeEnv(state), items = zeroInput('0'), stages = [];
+    let baseline = (await readSnapshot(state.detail)).snapshot;
+    for (const submit of [false, true]) {
+      const saved = await erpApi(env.browser, 1, { op: 'save', taskId: 1, submit, items, expectedSnapshot: baseline });
+      const written = state.lastPut?.items[0].quotes.find(q => q.shopName === 'ZERO');
+      const verified = await erpApi(env.browser, 1, { op: 'verify', taskId: 1, submitted: submit, items, expectedSnapshot: baseline });
+      stages.push(saved.ok && verified.ok && written?.unitPrice === 0 && written?.supplierId === 88
+        && JSON.stringify(written?.attachmentIds) === '[101]' && (review ? !Object.hasOwn(written, 'recommended') : written.recommended === true));
+      if (!verified.ok) break;
+      for (const id of verified.verifiedItemIds) baseline.items[baseline.items.findIndex(i => i.itemId === id)] = verified.snapshot.items.find(i => i.itemId === id);
+    }
+    results.push({ name: `同店合法0价显式纠正旧坏单价${JSON.stringify(unitPrice)}并保留元数据，草稿/提交/核对 review=${review}`,
+      pass: stages.length === 2 && stages.every(Boolean) && env.calls.filter(c => c.method === 'PUT').length === 2,
+      out: JSON.stringify({ stages, lastPut: state.lastPut }) });
+  }
 }
 
 for (const r of results) console.log(`${r.pass ? 'PASS' : 'FAIL'}  ${r.name}${r.pass ? '' : '\n      ' + r.out + '\n      put=' + r.put}`);

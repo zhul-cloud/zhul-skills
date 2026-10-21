@@ -100,6 +100,25 @@ test('ERP keeps its published predecessor hash for migration without trusting un
     assert.equal(compareSource(key, 'unknown customized ERP', erp).status, 'unknown');
 });
 
+test('ERP numeric verification upgrade recognizes the previous exact official function and preserves unknown changes', () => {
+    const key = '_erp/erpApi', current = helperSource(key, erp).source;
+    const previous = current
+        .replace('if (q.taxIncluded) e.taxRate = q.taxRate;', 'if (q.taxIncluded && q.taxRate != null) e.taxRate = Math.round(Number(q.taxRate));')
+        .replace("const same = (a, b) => typeof a === 'number' && Number.isFinite(a) && a >= 0\n      && typeof b === 'number' && Number.isFinite(b) && b >= 0 && Math.abs(a - b) < 0.005;",
+            'const same = (a, b) => Math.abs(Number(a) - Number(b)) < 0.005;')
+        .replace('if (e.taxIncluded && (!d.data.enabledTaxRates.includes(hit.taxRate) || hit.taxRate !== e.taxRate))',
+            'if (e.taxIncluded && Math.round(Number(hit.taxRate)) !== e.taxRate)')
+        .replace("      // 新报价仍限SOP已核3/13；原ERP报价另按实际启用字典原值保留和核对。\n      if (type === 'inquiry_tax_rate') out.enabledTaxRates = [...new Set(r.data\n        .filter(d => d.status === 1 && String(d.itemValue).trim() !== '')\n        .map(d => Number(d.itemValue)).filter(Number.isFinite))];\n", '')
+        .replace(/    \/\/ 保留\/自动带入的旧单价及税率[\s\S]*?(?=    if \(!body.items.length\))/, '');
+    assert.notEqual(previous, current);
+    const compared = compareSource(key, previous, erp);
+    assert.equal(compared.actualSha256, '82dbb5415d19d4efb4896800d2f1daffd92c07cd6b390e7914ba1dd488158c7e');
+    assert.ok(officialHashes[key].includes(compared.actualSha256));
+    assert.equal(compared.status, 'known-official-older'); assert.equal(compared.action, 'sync');
+    assert.equal(compareSource(key, current, erp).status, 'current');
+    assert.equal(compareSource(key, current.replace('const same =', '// local numeric custom change\n    const same ='), erp).status, 'unknown');
+});
+
 test('1688 unscoped preview predecessor is recognized while unknown changes remain preserved', () => {
     const key = 'air.1688.com/imPreviews';
     const current = helperSource(key).source;

@@ -274,6 +274,10 @@ async (browser, pageId, req) => {
       }
       if (problems.length) return { fail: contractError('dict', problems) };
       out[type] = expected;
+      // 新报价仍限SOP已核3/13；原ERP报价另按实际启用字典原值保留和核对。
+      if (type === 'inquiry_tax_rate') out.enabledTaxRates = [...new Set(r.data
+        .filter(d => d.status === 1 && String(d.itemValue).trim() !== '')
+        .map(d => Number(d.itemValue)).filter(Number.isFinite))];
     }
     return { data: out };
   };
@@ -379,7 +383,7 @@ async (browser, pageId, req) => {
     const e = { channel: q.channel, shopName: q.shopName ?? '', unitPrice: q.unitPrice, taxIncluded: !!q.taxIncluded,
       itemCondition: q.itemCondition ?? 0, leadTime: q.leadTime ?? 0, note: q.note ?? '',
       freeShipping: q.freeShipping !== false, attachmentIds: (q.attachments || []).map((a) => a.id) };
-    if (q.taxIncluded && q.taxRate != null) e.taxRate = Math.round(Number(q.taxRate));
+    if (q.taxIncluded) e.taxRate = q.taxRate;
     if (q.supplierId != null) e.supplierId = q.supplierId;
     if (!review && q.recommended) e.recommended = true;
     return e;
@@ -468,6 +472,20 @@ async (browser, pageId, req) => {
           : { itemId: item.id, quotes: keptQuotes(item, keepStatuses(true, review), new Set(), review) });
       }
     }
+    // 保留/自动带入的旧单价及税率按原值校验；本次合法新报价已替换的旧坏值不参与此检查。
+    const retainedValueProblems = [];
+    body.items.forEach((item, i) => item.quotes.forEach((quote, j) => {
+      if (typeof quote.unitPrice !== 'number' || !Number.isFinite(quote.unitPrice) || quote.unitPrice < 0) {
+        retainedValueProblems.push({ path: `save.body.items[${i}].quotes[${j}].unitPrice`, itemId: item.itemId,
+          expected: '非负有限数值', actual: quote.unitPrice });
+      }
+      if (quote.taxIncluded && !dicts.enabledTaxRates.includes(quote.taxRate)) {
+        retainedValueProblems.push({ path: `save.body.items[${i}].quotes[${j}].taxRate`, itemId: item.itemId,
+          expected: dicts.enabledTaxRates.join('/'), actual: quote.taxRate });
+      }
+    }));
+    if (retainedValueProblems.length) return { fail: { ...contractError('detail', retainedValueProblems),
+      hint: '原 ERP 保留报价单价或含税税率不符合已核合同，保留原数据并人工核对；不改本地报价凑值或重试写入' } };
     if (!body.items.length) return { fail: { ok: false, error: 'SKILL_INPUT', problems: [{ path: 'items', expected: '至少一个型号有报价或无货', actual: 'empty' }] } };
     const bodyProblems = [];
     check(body, CONTRACT.endpoints.save.body, 'save.body', bodyProblems);
@@ -532,7 +550,8 @@ async (browser, pageId, req) => {
     for (const field of ['taskId', 'task', 'reviewRequired', 'editable']) {
       if (baseline[field] !== current[field]) mismatches.push({ path: `snapshot.${field}`, problem: '任务信息与写入前基线不同' });
     }
-    const same = (a, b) => Math.abs(Number(a) - Number(b)) < 0.005;
+    const same = (a, b) => typeof a === 'number' && Number.isFinite(a) && a >= 0
+      && typeof b === 'number' && Number.isFinite(b) && b >= 0 && Math.abs(a - b) < 0.005;
     for (const it of body.items) {
       const item = byId.get(it.itemId);
       if (!item) { mismatches.push({ itemId: it.itemId, problem: '型号不在任务里' }); continue; }
@@ -561,7 +580,7 @@ async (browser, pageId, req) => {
         const diff = [];
         if (!same(hit.unitPrice, e.unitPrice)) diff.push(`单价 ${hit.unitPrice} ≠ ${e.unitPrice}`);
         if (!!hit.taxIncluded !== e.taxIncluded) diff.push('含税不一致');
-        if (e.taxIncluded && Math.round(Number(hit.taxRate)) !== e.taxRate) diff.push(`税率 ${hit.taxRate} ≠ ${e.taxRate}`);
+        if (e.taxIncluded && (!d.data.enabledTaxRates.includes(hit.taxRate) || hit.taxRate !== e.taxRate)) diff.push(`税率 ${hit.taxRate} ≠ ${e.taxRate}`);
         if ((hit.itemCondition ?? 0) !== e.itemCondition) diff.push(`货况码 ${hit.itemCondition} ≠ ${e.itemCondition}`);
         if ((hit.leadTime ?? 0) !== e.leadTime) diff.push(`货期码 ${hit.leadTime} ≠ ${e.leadTime}`);
         if (String(hit.note ?? '').trim() !== e.note.trim()) diff.push('备注不一致');

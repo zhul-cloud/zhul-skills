@@ -136,7 +136,7 @@ UI 报错、调用中断或看不清发送结果时保持 `pending`，记录待�
   "schemaVersion": 1,
   "runId": "虚构运行标识",
   "skillVersion": "2.9.0",
-  "executionVersion": "2.12.0",
+  "executionVersion": "2.12.1",
   "revision": 1,
   "eventSeq": 2,
   "createdAt": "2026-01-01T08:57:50.000Z",
