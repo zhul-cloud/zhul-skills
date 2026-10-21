@@ -17,7 +17,7 @@
 
 ERP 入口由 `records.mjs init` 返回有效 `erpUrl`，不重新读取原始配置拼接页面地址。可直接输入域名、`localhost:8000`、IPv4 或括号 IPv6（均可带端口）；未填协议默认 **`http://`**，完整 HTTP(S) 地址保留原协议。脚本取 origin，去掉路径、查询和片段，仅保留用户提供的非该协议默认端口，不猜补端口；仅首尾空白可忽略。拒绝凭据、内部空白、反斜线、无效主机/端口、非 Web 协议及歧义 IPv4 写法。
 
-显式 `init --erp <地址>` 校验并保存入口 origin；同版无参 `init` 返回已存地址对应的有效 origin，不静默改写磁盘配置。升级首次初始化的重建、结果告知及重新收集地址按[数据生命周期](data-lifecycle.md)处理。缺失返回 `null`，坏地址明确报错，再按[主代理地址提问分支](execution.md#何时提问答后回到哪里)更正，不使用浏览器人助代替输入。用有效 `erpUrl` 构造 `/inquiry/my-tasks`，在本任务 owned 或用户明确分配的 ERP 标签页导航。
+显式 `init --erp <地址>` 校验并保存入口 origin；保留数据时，无参 `init` 返回已存地址对应的有效 origin，不静默改写磁盘配置。初始化、保留/清理及结果告知按[数据生命周期](data-lifecycle.md)处理。缺失返回 `null`，坏地址明确报错，再按[主代理地址提问分支](execution.md#何时提问答后回到哪里)更正，不使用浏览器人助代替输入。用有效 `erpUrl` 构造 `/inquiry/my-tasks`，在本任务 owned 或用户明确分配的 ERP 标签页导航。
 
 **入口和最终页面分开核对**：导航后读实际最终 HTTP(S) URL、页面内容及任务页归属。同域 HTTP→HTTPS 升级正常继续，不反复导航退回 HTTP 入口，不增加 HTTPS-only 探测或自动回退。在已核实的 ERP 域（含其登录页）可按下一节准备 helper、调用 `ping`；未登录则走既有人助，交回后重新核最终 ERP 页并 `ping`。若跳转到其他域，先核实是否为本 ERP 的授权页面/登录流程；停在外部 SSO 域时，须返回已确认的 ERP 页才注册/调用 ERP helper，不猜域、不将 SSO 域保存为 ERP 地址。后续 helper 注册、`ping` 及 ERP 动作均以核实后的实际 ERP 页/hostname 为准，helper 的相对 `/api` 请求仍由当前 ERP 页面发出。不自动保存最终 URL 或改写配置，不复制令牌或假定不同 origin 共享登录态。
 

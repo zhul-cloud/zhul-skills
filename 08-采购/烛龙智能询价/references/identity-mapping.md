@@ -33,7 +33,7 @@
 
 ## 持久接口
 
-`scripts/contacts.mjs` 独立于业务配置读取，不控制浏览器、不联网、不调用 ERP、不发消息。文件固定在个人数据目录的 `contacts.json`，不进入公开仓库。`lookup` 只读；其余写入口要求当前版本已初始化，版本不一致时拒绝，不顺带清理。测试阶段升级的首次 `init` 会清除旧映射，统一见[数据生命周期](data-lifecycle.md)。调用均从 UTF-8 JSON 文件读入，避免手工拼接命令中的账号或店名：
+`scripts/contacts.mjs` 独立于业务配置读取，不控制浏览器、不联网、不调用 ERP、不发消息。文件固定在个人数据目录的 `contacts.json`，不进入公开仓库。`lookup` 只读；其余写入口要求当前版本已初始化，版本不一致时拒绝，不顺带清理。升级时映射的保留/旧格式清理统一见[数据生命周期](data-lifecycle.md)。调用均从 UTF-8 JSON 文件读入，避免手工拼接命令中的账号或店名：
 
 ```bash
 node "<技能目录>/scripts/contacts.mjs" lookup --file "<请求JSON>"
